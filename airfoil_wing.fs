@@ -172,6 +172,12 @@ export const airfoilWing = defineFeature(function(context is Context, id is Id, 
             annotation { "Name" : "Extra tip sweep angle (aft positive)" }
             isAngle(definition.tipSweep, TIP_SWEEP_BOUNDS);
 
+            annotation { "Name" : "Continue twist (angle of attack change) of the last segment" }
+            definition.tipContinueTwist is boolean;
+
+            annotation { "Name" : "Extra twist reached at the end of the tip (nose up positive)" }
+            isAngle(definition.tipTwist, AOA_BOUNDS);
+
             if (definition.tip == WingtipTreatment.RAKED)
             {
                 annotation { "Name" : "Tip chord ratio" }
@@ -211,7 +217,8 @@ export const airfoilWing = defineFeature(function(context is Context, id is Id, 
         reportFeatureInfo(context, id, wingReadout(wingStats(definition, specs), try silent(evVolume(context,
                     { "entities" : qBodyType(qCreatedBy(id, EntityType.BODY), BodyType.SOLID) }))));
     }, { "pointsPerSide" : 40, "closedTE" : true, "tip" : WingtipTreatment.FLAT, "tipSections" : 6, "tipChordRatio" : 0.3, "flip" : false,
-            "mirror" : false, "taper" : StationTaper.STRAIGHT, "tipContinue" : true, "tipSweep" : 0 * degree });
+            "mirror" : false, "taper" : StationTaper.STRAIGHT, "tipContinue" : true, "tipSweep" : 0 * degree,
+            "tipContinueTwist" : false, "tipTwist" : 0 * degree });
 
 /**
  * Builds one half wing running from the root plane along spanDir: one sketch per section, lofted either as a
@@ -501,6 +508,9 @@ function buildSpecs(definition is map) returns array
         const tipSpec = specs[size(specs) - 1];
         const n = definition.tipSections;
         const maxAngle = acos(MIN_CAP_SCALE);   // elliptical cap runs from 0 to just short of 90 degrees
+        // The last segment's rates of change, carried through the cap by the options below.
+        const prevSpec = specs[size(sorted) - 2];
+        const run = tipSpec.zLen - prevSpec.zLen;
         for (var j = 1; j <= n; j += 1)
         {
             const u = j / n;
@@ -539,13 +549,18 @@ function buildSpecs(definition is map) returns array
             var slopeY = 0;
             if (definition.tipContinue)
             {
-                const prevSpec = specs[size(sorted) - 2];
-                const run = tipSpec.zLen - prevSpec.zLen;
                 slopeX += (tipSpec.xOff - prevSpec.xOff) / run;
                 slopeY += (tipSpec.yOff - prevSpec.yOff) / run;
             }
             cap.xOff += slopeX * dz;
             cap.yOff += slopeY * dz;
+
+            // Twist: the last segment's rate of change of angle of attack, plus extra twist spread over the cap.
+            // (The raked cap pivots about its leading edge, the others about their origin point.)
+            var twist = definition.tipTwist * u;
+            if (definition.tipContinueTwist)
+                twist += (tipSpec.aoa - prevSpec.aoa) / run * dz;
+            cap.aoa += twist;
             specs = append(specs, cap);
         }
     }

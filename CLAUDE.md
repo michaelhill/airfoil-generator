@@ -34,8 +34,10 @@ User requirements:
 
 - **Readouts (verified numbers, display unverified)**: the feature ends with `reportFeatureInfo(context, id, ...)` giving full span, area, aspect ratio, root/tip chord, taper, mean chord, MAC, LE and quarter-chord sweep, dihedral and volume (`wingStats`, `wingReadout`). Test suite `readout` (root 200/tip 120, tip 100 mm aft/50 mm up): area 3200 cm^2, AR 12.5, MAC 163.3, LE sweep 6.8, c/4 5.7, dihedral 2.9 - all match hand calcs. The harness cannot see feature-info messages (nested calls), so whether/how the message renders in the UI (incl. newlines) needs a look in Onshape.
 
+- **Twist through the tip (verified)**: new tip params `Continue twist (angle of attack change) of the last segment` (default off) and `Extra twist reached at the end of the tip`. Cap section aoa = tip aoa + extra * u (+ last-segment rate * dz). Raked caps pivot about the LE, rounded/elliptical about the origin point. Harness suite `tiptwist` (root 0, tip -6 deg, raked 60 mm): last cap aoa -6.0 / -6.4 / -2.0 / -2.4 for none / continue / extra +4 / both, all four build.
+
 ## Next steps
-1. Possible follow-ups: continue twist through the tip cap, optional auto-inserted intermediate sections for large twist, reflexed 5-digit, guide curves / LE matching if the loft twists, single closed spline instead of upper/lower splines, NACA 6-series or UIUC .dat import, winglet tip.
+1. Possible follow-ups: optional auto-inserted intermediate sections for large twist, reflexed 5-digit, guide curves / LE matching if the loft twists, single closed spline instead of upper/lower splines, NACA 6-series or UIUC .dat import, winglet tip.
 
 ## Conventions / interpretation notes
 - "Camber radius" was interpreted as max camber (% chord) + camber position.

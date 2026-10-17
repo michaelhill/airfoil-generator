@@ -95,6 +95,34 @@ annotation { "Feature Type Name" : "Wing test" }
 export const wingTest = defineFeature(function(context is Context, id is Id, definition is map)
     precondition {}
     {
+        if (SUITE == "tiptwist")
+        {
+            // Root 0 deg, tip -6 deg over 1000 mm, raked tip 60 mm long: the last cap section's angle of attack.
+            // Rate -0.006 deg/mm, so continuing for 60 mm gives -6.36; extra +4 deg at the end of the tip adds 4.
+            var rootT = stn(0, "0012", 200 * millimeter);
+            var tipT = stn(100, "0012", 120 * millimeter);
+            tipT.aoa = -6 * degree;
+            var out = "";
+            const cases = [["NONE", false, 0], ["CONT", true, 0], ["EXTRA", false, 4], ["BOTH", true, 4]];
+            for (var c = 0; c < size(cases); c += 1)
+            {
+                var defn = { "stations" : [rootT, tipT], "span" : 1000 * millimeter, "tip" : WingtipTreatment.RAKED, "tipLength" : 60 * millimeter,
+                        "tipSections" : 6, "tipChordRatio" : 0.3, "tipContinue" : false, "tipSweep" : 0 * degree,
+                        "tipContinueTwist" : cases[c][1], "tipTwist" : cases[c][2] * degree };
+                const specs = buildSpecs(defn);
+                out = out ~ cases[c][0] ~ " " ~ r1(specs[size(specs) - 1].aoa / degree) ~ " | ";
+                try
+                {
+                    build(context, id + ("b" ~ c), [rootT, tipT], { "tip" : WingtipTreatment.RAKED, "tipLength" : 60 * millimeter,
+                                "tipContinueTwist" : cases[c][1], "tipTwist" : cases[c][2] * degree });
+                }
+                catch (e)
+                {
+                    out = out ~ "BUILD ERR | ";
+                }
+            }
+            throw regenError(out ~ "expect -6.0 / -6.4 / -2.0 / -2.4");
+        }
         if (SUITE == "readout")
         {
             // Plain wing (info message shows up in the notices), then a swept/raised tip checked through wingStats.
