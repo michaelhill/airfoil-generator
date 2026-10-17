@@ -207,6 +207,9 @@ export const airfoilWing = defineFeature(function(context is Context, id is Id, 
                         "operationType" : BooleanOperationType.UNION
                     });
         }
+
+        reportFeatureInfo(context, id, wingReadout(wingStats(definition, specs), try silent(evVolume(context,
+                    { "entities" : qBodyType(qCreatedBy(id, EntityType.BODY), BodyType.SOLID) }))));
     }, { "pointsPerSide" : 40, "closedTE" : true, "tip" : WingtipTreatment.FLAT, "tipSections" : 6, "tipChordRatio" : 0.3, "flip" : false,
             "mirror" : false, "taper" : StationTaper.STRAIGHT, "tipContinue" : true, "tipSweep" : 0 * degree });
 
@@ -285,6 +288,65 @@ function buildHalf(context is Context, id is Id, definition is map, specs is arr
     for (var i = 0; i < size(specs); i += 1)
         sketchBodies = append(sketchBodies, qCreatedBy(id + ("section" ~ i), EntityType.BODY));
     opDeleteBodies(context, id + "deleteSections", { "entities" : qUnion(sketchBodies) });
+}
+
+/**
+ * Planform numbers for the readout, all in millimetres / degrees. Everything is for the half wing built from the
+ * given sections (tip cap included), then doubled for the full-wing figures, since the wing is symmetric when mirrored
+ * and the usual aspect ratio is defined for the full wing anyway.
+ */
+function wingStats(definition is map, specs is array) returns map
+{
+    var halfArea = 0;
+    var chordSquared = 0;
+    for (var i = 0; i < size(specs) - 1; i += 1)
+    {
+        const c1 = specs[i].chord / millimeter;
+        const c2 = specs[i + 1].chord / millimeter;
+        const dz = (specs[i + 1].zLen - specs[i].zLen) / millimeter;
+        halfArea += (c1 + c2) / 2 * dz;
+        chordSquared += dz / 3 * (c1 * c1 + c1 * c2 + c2 * c2);
+    }
+
+    const userCount = size(definition.stations);
+    const rootSpec = specs[0];
+    const tipSpec = specs[userCount - 1];
+    const halfSpan = (specs[size(specs) - 1].zLen - rootSpec.zLen) / millimeter;
+    const stationRun = tipSpec.zLen - rootSpec.zLen;
+    return {
+            "fullSpan" : 2 * halfSpan,
+            "fullArea" : 2 * halfArea,
+            "aspectRatio" : 4 * halfSpan * halfSpan / (2 * halfArea),
+            "meanChord" : halfArea / halfSpan,
+            "mac" : chordSquared / halfArea,
+            "rootChord" : rootSpec.chord / millimeter,
+            "tipChord" : tipSpec.chord / millimeter,
+            "taper" : tipSpec.chord / rootSpec.chord,
+            "leSweep" : atan2(leadingEdgeX(tipSpec, 0) - leadingEdgeX(rootSpec, 0), stationRun) / degree,
+            "quarterSweep" : atan2(leadingEdgeX(tipSpec, 0.25) - leadingEdgeX(rootSpec, 0.25), stationRun) / degree,
+            "dihedral" : atan2(tipSpec.yOff - rootSpec.yOff, stationRun) / degree
+        };
+}
+
+/** X position of the point at the given fraction of the chord (0 = leading edge) of a section spec. */
+function leadingEdgeX(spec is map, chordFraction is number) returns ValueWithUnits
+{
+    return spec.xOff + (chordFraction - spec.origin) * spec.chord * cos(spec.aoa);
+}
+
+/** Formats wingStats (and the solid's volume, if it could be measured) for reportFeatureInfo. */
+function wingReadout(stats is map, volume) returns string
+{
+    var text = "Full span " ~ roundToPrecision(stats.fullSpan, 1) ~ " mm, area " ~ roundToPrecision(stats.fullArea / 100, 1)
+        ~ " cm^2, aspect ratio " ~ roundToPrecision(stats.aspectRatio, 2)
+        ~ "\nRoot/tip chord " ~ roundToPrecision(stats.rootChord, 1) ~ "/" ~ roundToPrecision(stats.tipChord, 1)
+        ~ " mm (taper " ~ roundToPrecision(stats.taper, 2) ~ "), mean chord " ~ roundToPrecision(stats.meanChord, 1)
+        ~ " mm, MAC " ~ roundToPrecision(stats.mac, 1) ~ " mm"
+        ~ "\nSweep: leading edge " ~ roundToPrecision(stats.leSweep, 1) ~ " deg, quarter chord " ~ roundToPrecision(stats.quarterSweep, 1)
+        ~ " deg; dihedral " ~ roundToPrecision(stats.dihedral, 1) ~ " deg";
+    if (volume != undefined)
+        text = text ~ "\nVolume " ~ roundToPrecision(volume / (centimeter ^ 3), 1) ~ " cm^3";
+    return text;
 }
 
 /** A station map with every field the precondition needs, used to seed a new feature. */

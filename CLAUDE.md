@@ -32,8 +32,10 @@ User requirements:
 
 - **Tip sweep continuation (verified)**: cap sections used to sit at the tip station's own sweep/vertical offsets, so the tip did not follow a swept wing. New tip params: `Continue sweep and dihedral of the last segment` (default on; slope of xOff/yOff between the last two stations carried through the cap) and `Extra tip sweep angle` (tan(angle) * cap span added). Harness suite `tipsweep`: raked tip, tip station 300 mm aft/50 mm up, slice 55 mm into the cap: LE x 270.0 / 286.3 / 289.8 / 306.2 for none / continue / extra 20 deg / both (expected 270 / 286.5 / 290 / 306.5), dihedral +2.7 mm (expected 2.75).
 
+- **Readouts (verified numbers, display unverified)**: the feature ends with `reportFeatureInfo(context, id, ...)` giving full span, area, aspect ratio, root/tip chord, taper, mean chord, MAC, LE and quarter-chord sweep, dihedral and volume (`wingStats`, `wingReadout`). Test suite `readout` (root 200/tip 120, tip 100 mm aft/50 mm up): area 3200 cm^2, AR 12.5, MAC 163.3, LE sweep 6.8, c/4 5.7, dihedral 2.9 - all match hand calcs. The harness cannot see feature-info messages (nested calls), so whether/how the message renders in the UI (incl. newlines) needs a look in Onshape.
+
 ## Next steps
-1. Possible follow-ups: optional auto-inserted intermediate sections for large twist, readouts (aspect ratio, mean chord), reflexed 5-digit, guide curves / LE matching if the loft twists, single closed spline instead of upper/lower splines, NACA 6-series or UIUC .dat import, winglet tip.
+1. Possible follow-ups: continue twist through the tip cap, optional auto-inserted intermediate sections for large twist, reflexed 5-digit, guide curves / LE matching if the loft twists, single closed spline instead of upper/lower splines, NACA 6-series or UIUC .dat import, winglet tip.
 
 ## Conventions / interpretation notes
 - "Camber radius" was interpreted as max camber (% chord) + camber position.

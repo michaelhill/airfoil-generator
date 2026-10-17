@@ -95,6 +95,16 @@ annotation { "Feature Type Name" : "Wing test" }
 export const wingTest = defineFeature(function(context is Context, id is Id, definition is map)
     precondition {}
     {
+        if (SUITE == "readout")
+        {
+            // Plain wing (info message shows up in the notices), then a swept/raised tip checked through wingStats.
+            const plain = build(context, id + "p", [stn(0, "0012", 200 * millimeter), stn(100, "0012", 120 * millimeter)], {});
+            var tipS = stn(100, "0012", 120 * millimeter);
+            tipS.sweep = 100 * millimeter;
+            tipS.vertical = 50 * millimeter;
+            const defn = { "stations" : [stn(0, "0012", 200 * millimeter), tipS], "span" : 1000 * millimeter, "tip" : WingtipTreatment.FLAT };
+            throw regenError(wingReadout(wingStats(defn, buildSpecs(defn)), undefined) ~ " expect LE 6.8 c/4 5.7 dih 2.9 AR 12.5 MAC 163.3");
+        }
         if (SUITE == "tipsweep")
         {
             // Raked tip, 60 mm long, tip station swept 300 mm aft and raised 50 mm; slice 55 mm into the cap.

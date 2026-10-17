@@ -1,7 +1,7 @@
 """Builds the code string for the Onshape MCP `test_feature` tool: airfoil_wing.fs (with the main feature
 un-exported, so the harness is the only exported feature) followed by tools/onshape_test_harness.fs.
 
-Usage: python3 tools/make_test_code.py <output file> [suite]   (suite: basic (default) or twist)
+Usage: python3 tools/make_test_code.py <output file> [suite]   (suite: basic (default), twist, tipsweep or readout)
 """
 import pathlib
 import sys
