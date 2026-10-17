@@ -28,8 +28,10 @@ User requirements:
 
 - **Added and verified in Onshape**: seeded root/tip stations on creation (editing logic, isCreating), `Taper between stations` (straight = one loft per segment, default; smooth = one loft through all stations; 3 stations 0012 chords 200/100/120 -> 1449.6 vs 1298.3 cm3, hand estimate for straight 1458), `Mirror about root plane` (builds second half on the other side and unions; 2412-less 0012 test: 4271 cm3 = 2 x 2136, span +-1000, errors if first station is not at 0 %). Test harness for these lives in `tools/onshape_test_harness.fs`; `python3 -I tools/make_test_code.py <out>` joins it with airfoil_wing.fs into the code string to paste into the MCP `test_feature`.
 
+- **Twist check (done, `tools/make_test_code.py <out> twist`)**: mid-span 1 mm slice of a lofted wing vs a constant-section wing built from the halfway parameters (chord 160, half the AoA/sweep/vertical). 8 deg washout + 200 mm sweep: slice bbox within 0.6 mm (no twist, no flip). 30 deg twist + 400 mm sweep + 100 mm vertical: within 0.4/1.8 mm in x but 8.5 mm in zMin; the loft blends corresponding points linearly, so a big twist between two stations shortens the mid chord (about cos(half the angle)). Not a loft twist, just linear blending; fix if needed by adding intermediate stations or auto-inserting sections when the AoA change per segment is large. AoA is bounded to +-45 deg.
+
 ## Next steps
-1. Possible follow-ups: check twist with large sweep + AoA (guide curves if needed), readouts (aspect ratio, mean chord), reflexed 5-digit, guide curves / LE matching if the loft twists, single closed spline instead of upper/lower splines, NACA 6-series or UIUC .dat import, winglet tip.
+1. Possible follow-ups: optional auto-inserted intermediate sections for large twist, readouts (aspect ratio, mean chord), reflexed 5-digit, guide curves / LE matching if the loft twists, single closed spline instead of upper/lower splines, NACA 6-series or UIUC .dat import, winglet tip.
 
 ## Conventions / interpretation notes
 - "Camber radius" was interpreted as max camber (% chord) + camber position.

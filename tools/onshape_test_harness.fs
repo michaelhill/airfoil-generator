@@ -43,16 +43,72 @@ function report(context is Context, id is Id, label is string, stations is array
     }
 }
 
+/** Mid-span slice (1 mm slab at y = -500 mm) of a wing, returned as [xMin, xMax, zMin, zMax] in mm. */
+function slabBox(context is Context, id is Id, stations is array) returns array
+{
+    const q = build(context, id + "w", stations, {});
+    fCuboid(context, id + "box", { "corner1" : vector(-2000, -500.5, -2000) * millimeter, "corner2" : vector(2000, -499.5, 2000) * millimeter });
+    opBoolean(context, id + "cut", {
+                "tools" : qUnion([q, qCreatedBy(id + "box", EntityType.BODY)]),
+                "operationType" : BooleanOperationType.INTERSECTION
+            });
+    const bb = evBox3d(context, { "topology" : qCreatedBy(id + "cut", EntityType.BODY) });
+    return [bb.minCorner[0] / millimeter, bb.maxCorner[0] / millimeter, bb.minCorner[2] / millimeter, bb.maxCorner[2] / millimeter];
+}
+
+/**
+ * Twist check: lofts a root (0 deg, chord 200) to a tip with the given angle of attack, sweep and vertical offset,
+ * then compares the mid-span slice with a constant-section wing built from the halfway parameters.
+ * Returns the differences (loft minus reference) in mm.
+ */
+function twistCase(context is Context, id is Id, label is string, tipAoa is ValueWithUnits, tipSweep is ValueWithUnits, tipVertical is ValueWithUnits) returns string
+{
+    try
+    {
+        var root = stn(0, "2412", 200 * millimeter);
+        var tipStation = stn(100, "2412", 120 * millimeter);
+        tipStation.aoa = tipAoa;
+        tipStation.sweep = tipSweep;
+        tipStation.vertical = tipVertical;
+        var midA = stn(0, "2412", 160 * millimeter);
+        var midB = stn(100, "2412", 160 * millimeter);
+        midA.aoa = tipAoa / 2;
+        midA.sweep = tipSweep / 2;
+        midA.vertical = tipVertical / 2;
+        midB.aoa = tipAoa / 2;
+        midB.sweep = tipSweep / 2;
+        midB.vertical = tipVertical / 2;
+        const lofted = slabBox(context, id + "a", [root, tipStation]);
+        const reference = slabBox(context, id + "b", [midA, midB]);
+        var out = label ~ " d";
+        for (var i = 0; i < 4; i += 1)
+            out = out ~ " " ~ r1(lofted[i] - reference[i]);
+        return out;
+    }
+    catch (e)
+    {
+        return label ~ " ERR " ~ e.message;
+    }
+}
+
 annotation { "Feature Type Name" : "Wing test" }
 export const wingTest = defineFeature(function(context is Context, id is Id, definition is map)
     precondition {}
     {
+        if (SUITE == "twist")
+        {
+            var out = twistCase(context, id + "t1", "W8", -8 * degree, 200 * millimeter, 0 * millimeter);
+            out = out ~ " | " ~ twistCase(context, id + "t2", "T30", 30 * degree, 400 * millimeter, 100 * millimeter);
+            out = out ~ " | " ~ twistCase(context, id + "t3", "T60", -60 * degree, 600 * millimeter, -100 * millimeter);
+            throw regenError(out);
+        }
         const root = stn(0, "0012", 200 * millimeter);
         const mid = stn(50, "0012", 100 * millimeter);
         const tipStation = stn(100, "0012", 120 * millimeter);
+        var out = "";
         const seeded = airfoilWingEditLogic(context, id, {}, { "stations" : [] }, true);
 
-        var out = report(context, id + "a", "STRAIGHT", [root, mid, tipStation], {});
+        out = report(context, id + "a", "STRAIGHT", [root, mid, tipStation], {});
         out = out ~ " | " ~ report(context, id + "b", "SMOOTH", [root, mid, tipStation], { "taper" : StationTaper.SMOOTH });
         out = out ~ " | " ~ report(context, id + "c", "MIRROR", [root, tipStation], { "mirror" : true });
         out = out ~ " | " ~ report(context, id + "d", "MIRROR+TIP", [root, tipStation], { "mirror" : true, "tip" : WingtipTreatment.ROUNDED });
