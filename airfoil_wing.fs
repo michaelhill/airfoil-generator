@@ -65,6 +65,7 @@ const AOA_BOUNDS = { (degree) : [-45, 0, 45] } as AngleBoundSpec;
 const POINTS_BOUNDS = { (unitless) : [10, 40, 200] } as IntegerBoundSpec;
 const TIP_SECTIONS_BOUNDS = { (unitless) : [2, 6, 20] } as IntegerBoundSpec;
 const TIP_RATIO_BOUNDS = { (unitless) : [0.02, 0.3, 1] } as RealBoundSpec;
+const TIP_SWEEP_BOUNDS = { (degree) : [-60, 0, 60] } as AngleBoundSpec;
 
 // Smallest scale a cap section is allowed to reach (a loft cannot end on a zero-size section).
 const MIN_CAP_SCALE = 0.03;
@@ -165,6 +166,12 @@ export const airfoilWing = defineFeature(function(context is Context, id is Id, 
             annotation { "Name" : "Wingtip sections" }
             isInteger(definition.tipSections, TIP_SECTIONS_BOUNDS);
 
+            annotation { "Name" : "Continue sweep and dihedral of the last segment", "Default" : true }
+            definition.tipContinue is boolean;
+
+            annotation { "Name" : "Extra tip sweep angle (aft positive)" }
+            isAngle(definition.tipSweep, TIP_SWEEP_BOUNDS);
+
             if (definition.tip == WingtipTreatment.RAKED)
             {
                 annotation { "Name" : "Tip chord ratio" }
@@ -201,7 +208,7 @@ export const airfoilWing = defineFeature(function(context is Context, id is Id, 
                     });
         }
     }, { "pointsPerSide" : 40, "closedTE" : true, "tip" : WingtipTreatment.FLAT, "tipSections" : 6, "tipChordRatio" : 0.3, "flip" : false,
-            "mirror" : false, "taper" : StationTaper.STRAIGHT });
+            "mirror" : false, "taper" : StationTaper.STRAIGHT, "tipContinue" : true, "tipSweep" : 0 * degree });
 
 /**
  * Builds one half wing running from the root plane along spanDir: one sketch per section, lofted either as a
@@ -463,6 +470,20 @@ function buildSpecs(definition is map) returns array
                 cap.xOff = tipSpec.xOff + d * cos(tipSpec.aoa);
                 cap.yOff = tipSpec.yOff - d * sin(tipSpec.aoa);
             }
+            // Carry the sweep and dihedral of the last segment on through the cap, plus any extra tip sweep, so the
+            // cap blends with the tip station instead of kinking back to a straight-span tip.
+            const dz = cap.zLen - tipSpec.zLen;
+            var slopeX = tan(definition.tipSweep);
+            var slopeY = 0;
+            if (definition.tipContinue)
+            {
+                const prevSpec = specs[size(sorted) - 2];
+                const run = tipSpec.zLen - prevSpec.zLen;
+                slopeX += (tipSpec.xOff - prevSpec.xOff) / run;
+                slopeY += (tipSpec.yOff - prevSpec.yOff) / run;
+            }
+            cap.xOff += slopeX * dz;
+            cap.yOff += slopeY * dz;
             specs = append(specs, cap);
         }
     }

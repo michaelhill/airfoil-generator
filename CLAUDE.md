@@ -30,6 +30,8 @@ User requirements:
 
 - **Twist check (done, `tools/make_test_code.py <out> twist`)**: mid-span 1 mm slice of a lofted wing vs a constant-section wing built from the halfway parameters (chord 160, half the AoA/sweep/vertical). 8 deg washout + 200 mm sweep: slice bbox within 0.6 mm (no twist, no flip). 30 deg twist + 400 mm sweep + 100 mm vertical: within 0.4/1.8 mm in x but 8.5 mm in zMin; the loft blends corresponding points linearly, so a big twist between two stations shortens the mid chord (about cos(half the angle)). Not a loft twist, just linear blending; fix if needed by adding intermediate stations or auto-inserting sections when the AoA change per segment is large. AoA is bounded to +-45 deg.
 
+- **Tip sweep continuation (verified)**: cap sections used to sit at the tip station's own sweep/vertical offsets, so the tip did not follow a swept wing. New tip params: `Continue sweep and dihedral of the last segment` (default on; slope of xOff/yOff between the last two stations carried through the cap) and `Extra tip sweep angle` (tan(angle) * cap span added). Harness suite `tipsweep`: raked tip, tip station 300 mm aft/50 mm up, slice 55 mm into the cap: LE x 270.0 / 286.3 / 289.8 / 306.2 for none / continue / extra 20 deg / both (expected 270 / 286.5 / 290 / 306.5), dihedral +2.7 mm (expected 2.75).
+
 ## Next steps
 1. Possible follow-ups: optional auto-inserted intermediate sections for large twist, readouts (aspect ratio, mean chord), reflexed 5-digit, guide curves / LE matching if the loft twists, single closed spline instead of upper/lower splines, NACA 6-series or UIUC .dat import, winglet tip.
 

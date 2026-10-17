@@ -43,11 +43,11 @@ function report(context is Context, id is Id, label is string, stations is array
     }
 }
 
-/** Mid-span slice (1 mm slab at y = -500 mm) of a wing, returned as [xMin, xMax, zMin, zMax] in mm. */
-function slabBox(context is Context, id is Id, stations is array) returns array
+/** Slice (1 mm slab centred on y, in mm) of a wing, returned as [xMin, xMax, zMin, zMax] in mm. */
+function slabBox(context is Context, id is Id, stations is array, overrides is map, y is number) returns array
 {
-    const q = build(context, id + "w", stations, {});
-    fCuboid(context, id + "box", { "corner1" : vector(-2000, -500.5, -2000) * millimeter, "corner2" : vector(2000, -499.5, 2000) * millimeter });
+    const q = build(context, id + "w", stations, overrides);
+    fCuboid(context, id + "box", { "corner1" : vector(-2000, y - 0.5, -2000) * millimeter, "corner2" : vector(2000, y + 0.5, 2000) * millimeter });
     opBoolean(context, id + "cut", {
                 "tools" : qUnion([q, qCreatedBy(id + "box", EntityType.BODY)]),
                 "operationType" : BooleanOperationType.INTERSECTION
@@ -78,8 +78,8 @@ function twistCase(context is Context, id is Id, label is string, tipAoa is Valu
         midB.aoa = tipAoa / 2;
         midB.sweep = tipSweep / 2;
         midB.vertical = tipVertical / 2;
-        const lofted = slabBox(context, id + "a", [root, tipStation]);
-        const reference = slabBox(context, id + "b", [midA, midB]);
+        const lofted = slabBox(context, id + "a", [root, tipStation], {}, -500);
+        const reference = slabBox(context, id + "b", [midA, midB], {}, -500);
         var out = label ~ " d";
         for (var i = 0; i < 4; i += 1)
             out = out ~ " " ~ r1(lofted[i] - reference[i]);
@@ -95,6 +95,23 @@ annotation { "Feature Type Name" : "Wing test" }
 export const wingTest = defineFeature(function(context is Context, id is Id, definition is map)
     precondition {}
     {
+        if (SUITE == "tipsweep")
+        {
+            // Raked tip, 60 mm long, tip station swept 300 mm aft and raised 50 mm; slice 55 mm into the cap.
+            var rootS = stn(0, "0012", 200 * millimeter);
+            var tipS = stn(100, "0012", 120 * millimeter);
+            tipS.sweep = 300 * millimeter;
+            tipS.vertical = 50 * millimeter;
+            var out = "";
+            const cases = [["NONE", false, 0], ["CONT", true, 0], ["EX20", false, 20], ["BOTH", true, 20]];
+            for (var c = 0; c < size(cases); c += 1)
+            {
+                const slab = slabBox(context, id + ("s" ~ c), [rootS, tipS], { "tip" : WingtipTreatment.RAKED, "tipLength" : 60 * millimeter,
+                            "tipContinue" : cases[c][1], "tipSweep" : cases[c][2] * degree }, -1055);
+                out = out ~ cases[c][0] ~ " x" ~ r1(slab[0]) ~ " z" ~ r1(slab[2]) ~ " | ";
+            }
+            throw regenError(out ~ "expect x 270/286.5/290/306.5");
+        }
         if (SUITE == "twist")
         {
             var out = twistCase(context, id + "t1", "W8", -8 * degree, 200 * millimeter, 0 * millimeter);
