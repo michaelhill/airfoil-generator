@@ -5,8 +5,10 @@ import(path : "onshape/std/common.fs", version : "3095.0");
  * Airfoil Wing
  *
  * Builds a lofted wing from NACA airfoil sections that are *calculated* (not looked up).
- * Sections are defined at any % of the span; each has its own airfoil, chord, thickness,
- * origin (pivot) %, angle of attack and offsets. An optional wingtip cap can be added.
+ * Each station is given as a NACA designation (e.g. 2412, 0012, 23012); camber, camber position and
+ * thickness are calculated from it, and can be overridden per station with "Customize shape".
+ * Sections are defined at any % of the span; each has its own chord, origin (pivot) %, angle of
+ * attack and offsets. An optional wingtip cap can be added, and the wing can be mirrored about the root.
  *
  * Conventions (in the selected root plane):
  *   - chord runs along the plane's X direction, leading edge at the smaller X
@@ -38,6 +40,14 @@ export enum WingtipTreatment
     ELLIPTICAL,
     annotation { "Name" : "Raked (linear taper)" }
     RAKED
+}
+
+export enum StationTaper
+{
+    annotation { "Name" : "Straight (linear between stations)" }
+    STRAIGHT,
+    annotation { "Name" : "Smooth (one curve through all stations)" }
+    SMOOTH
 }
 
 const SPAN_BOUNDS = { (meter) : [0.001, 1, 500], (centimeter) : 100, (millimeter) : 1000, (inch) : 40, (foot) : 3 } as LengthBoundSpec;
@@ -75,6 +85,9 @@ export const airfoilWing = defineFeature(function(context is Context, id is Id, 
 
         annotation { "Name" : "Overall length (span)" }
         isLength(definition.span, SPAN_BOUNDS);
+
+        annotation { "Name" : "Mirror about root plane (full wing)" }
+        definition.mirror is boolean;
 
         annotation { "Name" : "Stations (first = root, last = tip)", "Item name" : "station", "Item label template" : "NACA #designation @ #position %" }
         definition.stations is array;
@@ -132,6 +145,9 @@ export const airfoilWing = defineFeature(function(context is Context, id is Id, 
             isLength(station.vertical, OFFSET_BOUNDS);
         }
 
+        annotation { "Name" : "Taper between stations" }
+        definition.taper is StationTaper;
+
         annotation { "Name" : "Closed (sharp) trailing edge", "Default" : true }
         definition.closedTE is boolean;
 
@@ -164,65 +180,112 @@ export const airfoilWing = defineFeature(function(context is Context, id is Id, 
         if (planeResult == undefined)
             throw regenError("Select a plane or planar face for the root section.", ["plane"]);
 
-        const chordDir = planeResult.x;
         const spanDir = definition.flip ? -planeResult.normal : planeResult.normal;
+        const specs = buildSpecs(definition);
 
-        var specs = buildSpecs(definition);
+        if (definition.mirror && specs[0].zLen > 1e-6 * meter)
+            throw regenError("Mirroring needs the first station at 0 % span (the root plane).", ["stations"]);
 
-        var profiles = [];
-        for (var i = 0; i < size(specs); i += 1)
+        const halfCount = definition.mirror ? 2 : 1;
+        for (var h = 0; h < halfCount; h += 1)
         {
-            const spec = specs[i];
-            const sketchId = id + ("section" ~ i);
-            const sketchPlane = plane(planeResult.origin + spanDir * spec.zLen, planeResult.normal, chordDir);
-            var sketch = newSketchOnPlane(context, sketchId, { "sketchPlane" : sketchPlane });
-
-            const surfaces = airfoilSurfaces(spec, definition.pointsPerSide, definition.closedTE);
-            var upper = [];
-            var lower = [];
-            for (var p in surfaces.upper)
-                upper = append(upper, toSketch(p, spec));
-            for (var p in surfaces.lower)
-                lower = append(lower, toSketch(p, spec));
-
-            skFitSpline(sketch, "upper", { "points" : upper });
-            skFitSpline(sketch, "lower", { "points" : lower });
-            if (!definition.closedTE)
-            {
-                skLineSegment(sketch, "trailingEdge", { "start" : upper[size(upper) - 1], "end" : lower[size(lower) - 1] });
-            }
-            skSolve(sketch);
-
-            profiles = append(profiles, qSketchRegion(sketchId));
+            buildHalf(context, id + ("half" ~ h), definition, specs, planeResult, (h == 0) ? spanDir : -spanDir);
         }
 
-        // The wing and the tip cap are lofted separately: lofting both in one go interpolates smoothly through
-        // sections that are 1000 mm apart and then 5 mm apart, which overshoots wildly.
-        const userCount = size(definition.stations);
-        var wingProfiles = [];
-        var capProfiles = [];
-        for (var i = 0; i < size(profiles); i += 1)
+        if (definition.mirror)
         {
-            if (i < userCount)
-                wingProfiles = append(wingProfiles, profiles[i]);
-            if (i >= userCount - 1)
-                capProfiles = append(capProfiles, profiles[i]);
-        }
-        opLoft(context, id + "loft", { "profileSubqueries" : wingProfiles, "bodyType" : ToolBodyType.SOLID });
-        if (size(capProfiles) > 1)
-        {
-            opLoft(context, id + "capLoft", { "profileSubqueries" : capProfiles, "bodyType" : ToolBodyType.SOLID });
-            opBoolean(context, id + "join", {
-                        "tools" : qUnion([qCreatedBy(id + "loft", EntityType.BODY), qCreatedBy(id + "capLoft", EntityType.BODY)]),
+            opBoolean(context, id + "mirrorJoin", {
+                        "tools" : qUnion([qBodyType(qCreatedBy(id + "half0", EntityType.BODY), BodyType.SOLID),
+                                qBodyType(qCreatedBy(id + "half1", EntityType.BODY), BodyType.SOLID)]),
                         "operationType" : BooleanOperationType.UNION
                     });
         }
+    }, { "pointsPerSide" : 40, "closedTE" : true, "tip" : WingtipTreatment.FLAT, "tipSections" : 6, "tipChordRatio" : 0.3, "flip" : false,
+            "mirror" : false, "taper" : StationTaper.STRAIGHT });
 
-        var sketchBodies = [];
-        for (var i = 0; i < size(specs); i += 1)
-            sketchBodies = append(sketchBodies, qCreatedBy(id + ("section" ~ i), EntityType.BODY));
-        opDeleteBodies(context, id + "deleteSections", { "entities" : qUnion(sketchBodies) });
-    }, { "pointsPerSide" : 40, "closedTE" : true, "tip" : WingtipTreatment.FLAT, "tipSections" : 6, "tipChordRatio" : 0.3, "flip" : false });
+/**
+ * Builds one half wing running from the root plane along spanDir: one sketch per section, lofted either as a
+ * single smooth loft or as straight segments between stations, plus a separate loft for the tip cap, all joined.
+ * The wing and the cap are lofted separately because one loft through sections that are 1000 mm apart and then
+ * 5 mm apart interpolates smoothly and overshoots wildly.
+ */
+function buildHalf(context is Context, id is Id, definition is map, specs is array, planeResult is Plane, spanDir is Vector)
+{
+    var profiles = [];
+    for (var i = 0; i < size(specs); i += 1)
+    {
+        const spec = specs[i];
+        const sketchId = id + ("section" ~ i);
+        const sketchPlane = plane(planeResult.origin + spanDir * spec.zLen, planeResult.normal, planeResult.x);
+        var sketch = newSketchOnPlane(context, sketchId, { "sketchPlane" : sketchPlane });
+
+        const surfaces = airfoilSurfaces(spec, definition.pointsPerSide, definition.closedTE);
+        var upper = [];
+        var lower = [];
+        for (var p in surfaces.upper)
+            upper = append(upper, toSketch(p, spec));
+        for (var p in surfaces.lower)
+            lower = append(lower, toSketch(p, spec));
+
+        skFitSpline(sketch, "upper", { "points" : upper });
+        skFitSpline(sketch, "lower", { "points" : lower });
+        if (!definition.closedTE)
+        {
+            skLineSegment(sketch, "trailingEdge", { "start" : upper[size(upper) - 1], "end" : lower[size(lower) - 1] });
+        }
+        skSolve(sketch);
+
+        profiles = append(profiles, qSketchRegion(sketchId));
+    }
+
+    // Each group is a list of section indices that are lofted together.
+    const userCount = size(definition.stations);
+    var groups = [];
+    if (definition.taper == StationTaper.SMOOTH || userCount == 2)
+    {
+        var all = [];
+        for (var i = 0; i < userCount; i += 1)
+            all = append(all, i);
+        groups = append(groups, all);
+    }
+    else
+    {
+        for (var i = 0; i < userCount - 1; i += 1)
+            groups = append(groups, [i, i + 1]);
+    }
+    if (size(specs) > userCount)
+    {
+        var cap = [];
+        for (var i = userCount - 1; i < size(specs); i += 1)
+            cap = append(cap, i);
+        groups = append(groups, cap);
+    }
+
+    var loftBodies = [];
+    for (var g = 0; g < size(groups); g += 1)
+    {
+        var groupProfiles = [];
+        for (var k in groups[g])
+            groupProfiles = append(groupProfiles, profiles[k]);
+        const loftId = id + ("loft" ~ g);
+        opLoft(context, loftId, { "profileSubqueries" : groupProfiles, "bodyType" : ToolBodyType.SOLID });
+        loftBodies = append(loftBodies, qCreatedBy(loftId, EntityType.BODY));
+    }
+    if (size(loftBodies) > 1)
+        opBoolean(context, id + "join", { "tools" : qUnion(loftBodies), "operationType" : BooleanOperationType.UNION });
+
+    var sketchBodies = [];
+    for (var i = 0; i < size(specs); i += 1)
+        sketchBodies = append(sketchBodies, qCreatedBy(id + ("section" ~ i), EntityType.BODY));
+    opDeleteBodies(context, id + "deleteSections", { "entities" : qUnion(sketchBodies) });
+}
+
+/** A station map with every field the precondition needs, used to seed a new feature. */
+function seedStation(position is number, designation is string, chord is ValueWithUnits) returns map
+{
+    return { "position" : position, "designation" : designation, "family" : AirfoilFamily.NACA4, "custom" : false,
+            "chord" : chord, "origin" : 25, "aoa" : 0 * degree, "sweep" : 0 * millimeter, "vertical" : 0 * millimeter };
+}
 
 /** Keeps only the digits of a designation, so "NACA 2412" and "2412" are equivalent. */
 function nacaDigits(designation is string) returns string
@@ -284,13 +347,15 @@ function parseNaca(designation is string) returns map
 }
 
 /**
- * Editing logic: keeps each station's hidden series (4/5-digit) in step with its designation, and when
- * "Customize shape" is switched on, or the designation changes while customizing, fills the editable
- * values from the designation.
+ * Editing logic: seeds a new feature with a root and a tip station, keeps each station's hidden series
+ * (4/5-digit) in step with its designation, and when "Customize shape" is switched on, or the designation
+ * changes while customizing, fills the editable values from the designation.
  */
 export function airfoilWingEditLogic(context is Context, id is Id, oldDefinition is map, definition is map,
     isCreating is boolean) returns map
 {
+    if (isCreating && (definition.stations == undefined || size(definition.stations) == 0))
+        definition.stations = [seedStation(0, "2412", 200 * millimeter), seedStation(100, "0012", 120 * millimeter)];
     if (definition.stations == undefined)
         return definition;
     for (var i = 0; i < size(definition.stations); i += 1)

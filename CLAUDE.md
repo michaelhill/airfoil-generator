@@ -26,8 +26,10 @@ User requirements:
 - Gotchas: in std 3095 unquoted keys in the defineFeature defaults map (`{ flip : false }`) make the feature vanish ("no features found"); use quoted keys. `substring` with 3 args is missing at std 2180.
 - Onshape MCP is registered as `onshape` (`https://fs-mcp.labs.onshape.app/mcp`); if its tools are not visible, the user must authenticate via `/mcp` and reload. Tools: test_feature (throw regenError(out) in a harness feature to read values back, keep under ~280 chars), create_geometry, put_featurescript. Calls consume the user's Onshape API allocation.
 
+- **Added and verified in Onshape**: seeded root/tip stations on creation (editing logic, isCreating), `Taper between stations` (straight = one loft per segment, default; smooth = one loft through all stations; 3 stations 0012 chords 200/100/120 -> 1449.6 vs 1298.3 cm3, hand estimate for straight 1458), `Mirror about root plane` (builds second half on the other side and unions; 2412-less 0012 test: 4271 cm3 = 2 x 2136, span +-1000, errors if first station is not at 0 %). Test harness for these lives in `tools/onshape_test_harness.fs`; `python3 -I tools/make_test_code.py <out>` joins it with airfoil_wing.fs into the code string to paste into the MCP `test_feature`.
+
 ## Next steps
-1. Possible follow-ups: mirror about root for full wings, guide curves / LE matching if the loft twists, single closed spline instead of upper/lower splines, NACA 6-series or UIUC .dat import, winglet tip.
+1. Possible follow-ups: check twist with large sweep + AoA (guide curves if needed), readouts (aspect ratio, mean chord), reflexed 5-digit, guide curves / LE matching if the loft twists, single closed spline instead of upper/lower splines, NACA 6-series or UIUC .dat import, winglet tip.
 
 ## Conventions / interpretation notes
 - "Camber radius" was interpreted as max camber (% chord) + camber position.
