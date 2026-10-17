@@ -95,6 +95,35 @@ annotation { "Feature Type Name" : "Wing test" }
 export const wingTest = defineFeature(function(context is Context, id is Id, definition is map)
     precondition {}
     {
+        if (SUITE == "tangent")
+        {
+            // Constant 150 mm chord, leading-edge sweep offsets 0 / 150 / 200 mm at 0 / 60 / 100 % of 1000 mm, raked 80 mm tip.
+            // Slope of the leading-edge x position just inside (y = -980, -990) and just outside (y = -1010, -1020) the tip
+            // station at y = -1000. Smooth: expect about 0.075 on both sides (end slope of the shape-preserving cubic);
+            // straight: 0.125 on both sides (slope of the last segment).
+            var out = "";
+            for (var m = 0; m < 2; m += 1)
+            {
+                try
+                {
+                    var s1 = stn(60, "0012", 150 * millimeter);
+                    s1.sweep = 150 * millimeter;
+                    var s2 = stn(100, "0012", 150 * millimeter);
+                    s2.sweep = 200 * millimeter;
+                    const stations = [stn(0, "0012", 150 * millimeter), s1, s2];
+                    const overrides = { "taper" : m == 0 ? StationTaper.SMOOTH : StationTaper.STRAIGHT, "tip" : WingtipTreatment.RAKED, "tipLength" : 80 * millimeter };
+                    var xs = [];
+                    for (var y in [-980, -990, -1010, -1020])
+                        xs = append(xs, slabBox(context, id + ("t" ~ m ~ "_" ~ (-y)), stations, overrides, y)[0]);
+                    out = out ~ (m == 0 ? "SMOOTH" : "STRAIGHT") ~ " in " ~ roundToPrecision((xs[1] - xs[0]) / 10, 3) ~ " out " ~ roundToPrecision((xs[3] - xs[2]) / 10, 3) ~ " | ";
+                }
+                catch (e)
+                {
+                    out = out ~ (m == 0 ? "SMOOTH" : "STRAIGHT") ~ " ERR " ~ e.message ~ " | ";
+                }
+            }
+            throw regenError(out ~ "expect ~0.075 both | 0.125 both");
+        }
         if (SUITE == "tiptwist")
         {
             // Root 0 deg, tip -6 deg over 1000 mm, raked tip 60 mm long: the last cap section's angle of attack.
@@ -109,7 +138,7 @@ export const wingTest = defineFeature(function(context is Context, id is Id, def
                 var defn = { "stations" : [rootT, tipT], "span" : 1000 * millimeter, "tip" : WingtipTreatment.RAKED, "tipLength" : 60 * millimeter,
                         "tipSections" : 6, "tipChordRatio" : 0.3, "tipContinue" : false, "tipSweep" : 0 * degree,
                         "tipContinueTwist" : cases[c][1], "tipTwist" : cases[c][2] * degree };
-                const specs = buildSpecs(defn);
+                const specs = buildSpecs(defn).specs;
                 out = out ~ cases[c][0] ~ " " ~ r1(specs[size(specs) - 1].aoa / degree) ~ " | ";
                 try
                 {
@@ -131,7 +160,7 @@ export const wingTest = defineFeature(function(context is Context, id is Id, def
             tipS.sweep = 100 * millimeter;
             tipS.vertical = 50 * millimeter;
             const defn = { "stations" : [stn(0, "0012", 200 * millimeter), tipS], "span" : 1000 * millimeter, "tip" : WingtipTreatment.FLAT };
-            throw regenError(wingReadout(wingStats(defn, buildSpecs(defn)), undefined) ~ " expect LE 6.8 c/4 5.7 dih 2.9 AR 12.5 MAC 163.3");
+            throw regenError(wingReadout(wingStats(buildSpecs(defn)), undefined) ~ " expect LE 6.8 c/4 5.7 dih 2.9 AR 12.5 MAC 163.3");
         }
         if (SUITE == "tipsweep")
         {

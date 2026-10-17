@@ -194,15 +194,15 @@ export const airfoilWing = defineFeature(function(context is Context, id is Id, 
             throw regenError("Select a plane or planar face for the root section.", ["plane"]);
 
         const spanDir = definition.flip ? -planeResult.normal : planeResult.normal;
-        const specs = buildSpecs(definition);
+        const built = buildSpecs(definition);
 
-        if (definition.mirror && specs[0].zLen > 1e-6 * meter)
+        if (definition.mirror && built.specs[0].zLen > 1e-6 * meter)
             throw regenError("Mirroring needs the first station at 0 % span (the root plane).", ["stations"]);
 
         const halfCount = definition.mirror ? 2 : 1;
         for (var h = 0; h < halfCount; h += 1)
         {
-            buildHalf(context, id + ("half" ~ h), definition, specs, planeResult, (h == 0) ? spanDir : -spanDir);
+            buildHalf(context, id + ("half" ~ h), definition, built, planeResult, (h == 0) ? spanDir : -spanDir);
         }
 
         if (definition.mirror)
@@ -214,7 +214,7 @@ export const airfoilWing = defineFeature(function(context is Context, id is Id, 
                     });
         }
 
-        reportFeatureInfo(context, id, wingReadout(wingStats(definition, specs), try silent(evVolume(context,
+        reportFeatureInfo(context, id, wingReadout(wingStats(built), try silent(evVolume(context,
                     { "entities" : qBodyType(qCreatedBy(id, EntityType.BODY), BodyType.SOLID) }))));
     }, { "pointsPerSide" : 40, "closedTE" : true, "tip" : WingtipTreatment.FLAT, "tipSections" : 6, "tipChordRatio" : 0.3, "flip" : false,
             "mirror" : false, "taper" : StationTaper.STRAIGHT, "tipContinue" : true, "tipSweep" : 0 * degree,
@@ -224,10 +224,13 @@ export const airfoilWing = defineFeature(function(context is Context, id is Id, 
  * Builds one half wing running from the root plane along spanDir: one sketch per section, lofted either as a
  * single smooth loft or as straight segments between stations, plus a separate loft for the tip cap, all joined.
  * The wing and the cap are lofted separately because one loft through sections that are 1000 mm apart and then
- * 5 mm apart interpolates smoothly and overshoots wildly.
+ * 5 mm apart interpolates smoothly and overshoots wildly. built.specs holds the wing sections up to
+ * built.tipIndex (the tip station) followed by the cap sections.
  */
-function buildHalf(context is Context, id is Id, definition is map, specs is array, planeResult is Plane, spanDir is Vector)
+function buildHalf(context is Context, id is Id, definition is map, built is map, planeResult is Plane, spanDir is Vector)
 {
+    const specs = built.specs;
+    const tipIndex = built.tipIndex;
     var profiles = [];
     for (var i = 0; i < size(specs); i += 1)
     {
@@ -256,24 +259,23 @@ function buildHalf(context is Context, id is Id, definition is map, specs is arr
     }
 
     // Each group is a list of section indices that are lofted together.
-    const userCount = size(definition.stations);
     var groups = [];
-    if (definition.taper == StationTaper.SMOOTH || userCount == 2)
+    if (definition.taper == StationTaper.SMOOTH || tipIndex == 1)
     {
         var all = [];
-        for (var i = 0; i < userCount; i += 1)
+        for (var i = 0; i <= tipIndex; i += 1)
             all = append(all, i);
         groups = append(groups, all);
     }
     else
     {
-        for (var i = 0; i < userCount - 1; i += 1)
+        for (var i = 0; i < tipIndex; i += 1)
             groups = append(groups, [i, i + 1]);
     }
-    if (size(specs) > userCount)
+    if (size(specs) > tipIndex + 1)
     {
         var cap = [];
-        for (var i = userCount - 1; i < size(specs); i += 1)
+        for (var i = tipIndex; i < size(specs); i += 1)
             cap = append(cap, i);
         groups = append(groups, cap);
     }
@@ -302,8 +304,9 @@ function buildHalf(context is Context, id is Id, definition is map, specs is arr
  * given sections (tip cap included), then doubled for the full-wing figures, since the wing is symmetric when mirrored
  * and the usual aspect ratio is defined for the full wing anyway.
  */
-function wingStats(definition is map, specs is array) returns map
+function wingStats(built is map) returns map
 {
+    const specs = built.specs;
     var halfArea = 0;
     var chordSquared = 0;
     for (var i = 0; i < size(specs) - 1; i += 1)
@@ -315,9 +318,8 @@ function wingStats(definition is map, specs is array) returns map
         chordSquared += dz / 3 * (c1 * c1 + c1 * c2 + c2 * c2);
     }
 
-    const userCount = size(definition.stations);
     const rootSpec = specs[0];
-    const tipSpec = specs[userCount - 1];
+    const tipSpec = specs[built.tipIndex];
     const halfSpan = (specs[size(specs) - 1].zLen - rootSpec.zLen) / millimeter;
     const stationRun = tipSpec.zLen - rootSpec.zLen;
     return {
@@ -465,15 +467,22 @@ export function airfoilWingEditLogic(context is Context, id is Id, oldDefinition
     return definition;
 }
 
-/** Turns the user's stations (plus generated wingtip sections) into a flat list of section specs. */
-function buildSpecs(definition is map) returns array
+/** Sections per segment (on average) used to follow the smooth curve when the taper is "Smooth". */
+const SMOOTH_SECTIONS_PER_SEGMENT = 8;
+
+/**
+ * Turns the user's stations (plus generated smooth-curve sections and wingtip sections) into a flat list of section
+ * specs. Returns { specs, tipIndex }: specs[0..tipIndex] are the wing (tipIndex is the tip station), anything after
+ * that is the wingtip cap.
+ */
+function buildSpecs(definition is map) returns map
 {
     const sorted = sort(definition.stations, function(a, b)
         {
             return a.position - b.position;
         });
 
-    var specs = [];
+    var userSpecs = [];
     for (var i = 0; i < size(sorted); i += 1)
     {
         const st = sorted[i];
@@ -486,7 +495,7 @@ function buildSpecs(definition is map) returns array
         // The designation supplies the defaults; "Customize shape" replaces them with the edited values.
         const five = naca.family == AirfoilFamily.NACA5;
 
-        specs = append(specs, {
+        userSpecs = append(userSpecs, {
                     "zLen" : definition.span * st.position / 100,
                     "family" : naca.family,
                     "camber" : five ? 0 : (st.custom ? st.camber : naca.camber) / 100,
@@ -503,14 +512,31 @@ function buildSpecs(definition is map) returns array
                 });
     }
 
+    // With a smooth taper the placement of the sections (chord, sweep, dihedral, twist) follows one smooth curve through
+    // the stations. We evaluate that curve ourselves, so the sections are evenly spaced (a loft through unevenly spaced
+    // sections overshoots) and we know the exact slope at the tip station to continue into the wingtip cap.
+    const userCount = size(userSpecs);
+    const smooth = definition.taper == StationTaper.SMOOTH && userCount > 2;
+    var wingSpecs = userSpecs;
+    var tipSlopeX = (userSpecs[userCount - 1].xOff - userSpecs[userCount - 2].xOff) / (userSpecs[userCount - 1].zLen - userSpecs[userCount - 2].zLen);
+    var tipSlopeY = (userSpecs[userCount - 1].yOff - userSpecs[userCount - 2].yOff) / (userSpecs[userCount - 1].zLen - userSpecs[userCount - 2].zLen);
+    var tipSlopeAoa = (userSpecs[userCount - 1].aoa - userSpecs[userCount - 2].aoa) / (userSpecs[userCount - 1].zLen - userSpecs[userCount - 2].zLen);
+    if (smooth)
+    {
+        const curve = smoothSpecs(userSpecs);
+        wingSpecs = curve.specs;
+        tipSlopeX = curve.slopeX;
+        tipSlopeY = curve.slopeY;
+        tipSlopeAoa = curve.slopeAoa * degree / millimeter;
+    }
+
+    var specs = wingSpecs;
+    const tipIndex = size(wingSpecs) - 1;
     if (definition.tip != WingtipTreatment.FLAT)
     {
-        const tipSpec = specs[size(specs) - 1];
+        const tipSpec = wingSpecs[tipIndex];
         const n = definition.tipSections;
         const maxAngle = acos(MIN_CAP_SCALE);   // elliptical cap runs from 0 to just short of 90 degrees
-        // The last segment's rates of change, carried through the cap by the options below.
-        const prevSpec = specs[size(sorted) - 2];
-        const run = tipSpec.zLen - prevSpec.zLen;
         for (var j = 1; j <= n; j += 1)
         {
             const u = j / n;
@@ -542,29 +568,138 @@ function buildSpecs(definition is map) returns array
                 cap.xOff = tipSpec.xOff + d * cos(tipSpec.aoa);
                 cap.yOff = tipSpec.yOff - d * sin(tipSpec.aoa);
             }
-            // Carry the sweep and dihedral of the last segment on through the cap, plus any extra tip sweep, so the
-            // cap blends with the tip station instead of kinking back to a straight-span tip.
+            // Carry the sweep and dihedral at the tip station on through the cap (the slope of the curve there when the
+            // taper is smooth, otherwise that of the last segment), plus any extra tip sweep, so the cap blends with the
+            // tip station instead of kinking back to a straight-span tip.
             const dz = cap.zLen - tipSpec.zLen;
             var slopeX = tan(definition.tipSweep);
             var slopeY = 0;
             if (definition.tipContinue)
             {
-                slopeX += (tipSpec.xOff - prevSpec.xOff) / run;
-                slopeY += (tipSpec.yOff - prevSpec.yOff) / run;
+                slopeX += tipSlopeX;
+                slopeY += tipSlopeY;
             }
             cap.xOff += slopeX * dz;
             cap.yOff += slopeY * dz;
 
-            // Twist: the last segment's rate of change of angle of attack, plus extra twist spread over the cap.
+            // Twist: the rate of change of angle of attack at the tip station, plus extra twist spread over the cap.
             // (The raked cap pivots about its leading edge, the others about their origin point.)
             var twist = definition.tipTwist * u;
             if (definition.tipContinueTwist)
-                twist += (tipSpec.aoa - prevSpec.aoa) / run * dz;
+                twist += tipSlopeAoa * dz;
             cap.aoa += twist;
             specs = append(specs, cap);
         }
     }
-    return specs;
+    return { "specs" : specs, "tipIndex" : tipIndex };
+}
+
+/**
+ * Sections along a smooth curve through the stations. Chord, origin, sweep, dihedral and angle of attack are
+ * interpolated with a shape-preserving cubic (no overshoot between stations); the section shape between two stations
+ * is a blend of the two airfoils. Returns { specs, slopeX, slopeY, slopeAoa } where the slopes are the derivatives
+ * at the tip station (mm per mm, mm per mm, degrees per mm).
+ */
+function smoothSpecs(userSpecs is array) returns map
+{
+    const count = size(userSpecs);
+    var z = [];
+    var chord = [];
+    var origin = [];
+    var aoa = [];
+    var xOff = [];
+    var yOff = [];
+    for (var spec in userSpecs)
+    {
+        z = append(z, spec.zLen / millimeter);
+        chord = append(chord, spec.chord / millimeter);
+        origin = append(origin, spec.origin);
+        aoa = append(aoa, spec.aoa / degree);
+        xOff = append(xOff, spec.xOff / millimeter);
+        yOff = append(yOff, spec.yOff / millimeter);
+    }
+    const dChord = pchipSlopes(z, chord);
+    const dOrigin = pchipSlopes(z, origin);
+    const dAoa = pchipSlopes(z, aoa);
+    const dXOff = pchipSlopes(z, xOff);
+    const dYOff = pchipSlopes(z, yOff);
+
+    const spacing = (z[count - 1] - z[0]) / (SMOOTH_SECTIONS_PER_SEGMENT * (count - 1));
+    var specs = [];
+    for (var k = 0; k < count - 1; k += 1)
+    {
+        specs = append(specs, userSpecs[k]);
+        const h = z[k + 1] - z[k];
+        const intervals = max(2, round(h / spacing));
+        for (var j = 1; j < intervals; j += 1)
+        {
+            const t = j / intervals;
+            var section = userSpecs[k];
+            section.zLen = (z[k] + t * h) * millimeter;
+            section.chord = hermite(chord[k], chord[k + 1], dChord[k], dChord[k + 1], h, t) * millimeter;
+            section.origin = hermite(origin[k], origin[k + 1], dOrigin[k], dOrigin[k + 1], h, t);
+            section.aoa = hermite(aoa[k], aoa[k + 1], dAoa[k], dAoa[k + 1], h, t) * degree;
+            section.xOff = hermite(xOff[k], xOff[k + 1], dXOff[k], dXOff[k + 1], h, t) * millimeter;
+            section.yOff = hermite(yOff[k], yOff[k + 1], dYOff[k], dYOff[k + 1], h, t) * millimeter;
+            section.blendA = userSpecs[k];
+            section.blendB = userSpecs[k + 1];
+            section.blendT = t;
+            specs = append(specs, section);
+        }
+    }
+    specs = append(specs, userSpecs[count - 1]);
+    return { "specs" : specs, "slopeX" : dXOff[count - 1], "slopeY" : dYOff[count - 1], "slopeAoa" : dAoa[count - 1] };
+}
+
+/** Cubic Hermite interpolation on a segment of length h, at fraction t, from end values and end slopes. */
+function hermite(y0 is number, y1 is number, d0 is number, d1 is number, h is number, t is number) returns number
+{
+    const t2 = t * t;
+    const t3 = t2 * t;
+    return (2 * t3 - 3 * t2 + 1) * y0 + (t3 - 2 * t2 + t) * h * d0 + (-2 * t3 + 3 * t2) * y1 + (t3 - t2) * h * d1;
+}
+
+/** Slopes for a shape-preserving (PCHIP) cubic through the points (x[k], y[k]); x must be increasing. */
+function pchipSlopes(x is array, y is array) returns array
+{
+    const n = size(x);
+    var h = [];
+    var delta = [];
+    for (var k = 0; k < n - 1; k += 1)
+    {
+        h = append(h, x[k + 1] - x[k]);
+        delta = append(delta, (y[k + 1] - y[k]) / h[k]);
+    }
+    if (n == 2)
+        return [delta[0], delta[0]];
+
+    var d = [pchipEndSlope(h[0], h[1], delta[0], delta[1])];
+    for (var k = 1; k < n - 1; k += 1)
+    {
+        if (delta[k - 1] * delta[k] <= 0)
+        {
+            d = append(d, 0);
+        }
+        else
+        {
+            const w1 = 2 * h[k] + h[k - 1];
+            const w2 = h[k] + 2 * h[k - 1];
+            d = append(d, (w1 + w2) / (w1 / delta[k - 1] + w2 / delta[k]));
+        }
+    }
+    d = append(d, pchipEndSlope(h[n - 2], h[n - 3], delta[n - 2], delta[n - 3]));
+    return d;
+}
+
+/** One-sided three-point end slope, limited so it does not overshoot (h0, d0 are the end segment). */
+function pchipEndSlope(h0 is number, h1 is number, d0 is number, d1 is number) returns number
+{
+    var slope = ((2 * h0 + h1) * d0 - h0 * d1) / (h0 + h1);
+    if (slope * d0 <= 0)
+        slope = 0;
+    else if (d0 * d1 <= 0 && abs(slope) > 3 * abs(d0))
+        slope = 3 * d0;
+    return slope;
 }
 
 /**
@@ -573,6 +708,23 @@ function buildSpecs(definition is map) returns array
  */
 function airfoilSurfaces(spec is map, n is number, closedTE is boolean) returns map
 {
+    // A section between two stations (smooth taper) is a blend of the two airfoils, point by point.
+    if (spec.blendA != undefined)
+    {
+        const a = airfoilSurfaces(spec.blendA, n, closedTE);
+        const b = airfoilSurfaces(spec.blendB, n, closedTE);
+        var blendedUpper = [];
+        var blendedLower = [];
+        for (var i = 0; i < n; i += 1)
+        {
+            blendedUpper = append(blendedUpper, [(1 - spec.blendT) * a.upper[i][0] + spec.blendT * b.upper[i][0],
+                        (1 - spec.blendT) * a.upper[i][1] + spec.blendT * b.upper[i][1]]);
+            blendedLower = append(blendedLower, [(1 - spec.blendT) * a.lower[i][0] + spec.blendT * b.lower[i][0],
+                        (1 - spec.blendT) * a.lower[i][1] + spec.blendT * b.lower[i][1]]);
+        }
+        return { "upper" : blendedUpper, "lower" : blendedLower };
+    }
+
     var upper = [];
     var lower = [];
     for (var i = 0; i < n; i += 1)
