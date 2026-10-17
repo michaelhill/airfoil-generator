@@ -18,16 +18,25 @@ import(path : "onshape/std/common.fs", version : "3095.0");
  *     section rotates about (25 % = quarter-chord line, the usual choice)
  *   - positive angle of attack pitches the nose up (+Y)
  *
- * Math: NACA 4-digit (Abbott & von Doenhoff), NACA 5-digit standard 2xx camber lines.
- * Reference implementation / UIUC comparison: tools/naca_reference.py
+ * Math: NACA 4-digit (Abbott & von Doenhoff), NACA 5-digit standard (2x0) and reflexed (2x1) camber lines.
+ * A station can instead use pasted coordinates (Selig or Lednicer .dat, e.g. from the UIUC database).
+ * Reference implementations / UIUC comparison: tools/naca_reference.py, tools/dat_reference.py
  */
 
 export enum AirfoilFamily
 {
     annotation { "Name" : "NACA 4-digit" }
     NACA4,
-    annotation { "Name" : "NACA 5-digit (standard, non-reflex)" }
+    annotation { "Name" : "NACA 5-digit" }
     NACA5
+}
+
+export enum AirfoilSource
+{
+    annotation { "Name" : "NACA designation" }
+    NACA,
+    annotation { "Name" : "Pasted coordinates (.dat)" }
+    COORDINATES
 }
 
 export enum WingtipTreatment
@@ -67,12 +76,24 @@ const TIP_SECTIONS_BOUNDS = { (unitless) : [2, 6, 20] } as IntegerBoundSpec;
 const TIP_RATIO_BOUNDS = { (unitless) : [0.02, 0.3, 1] } as RealBoundSpec;
 const TIP_SWEEP_BOUNDS = { (degree) : [-60, 0, 60] } as AngleBoundSpec;
 
+// Pasted coordinates: an open trailing edge is made at least this thick (fraction of chord, as the NACA open edge).
+const MIN_OPEN_GAP = 0.0025;
+// Pasted coordinates: fine grid on which the linear trailing-edge pinch is checked for crossing, and where the
+// fallback closing (thickness tapered to zero) starts.
+const CLOSE_CHECK_POINTS = 400;
+const CLOSE_RAMP_START = 0.9;
+
 // Smallest scale a cap section is allowed to reach (a loft cannot end on a zero-size section).
 const MIN_CAP_SCALE = 0.03;
 
 // NACA 5-digit standard camber-line constants for 210, 220, 230, 240, 250 (design CL = 0.3).
 const FIVE_DIGIT_R = [0.0580, 0.1260, 0.2025, 0.2900, 0.3910];
 const FIVE_DIGIT_K1 = [361.4, 51.64, 15.957, 6.643, 3.230];
+// Reflexed camber lines 221, 231, 241, 251 (no 211): r, k1 and k2/k1, indexed like the above (first entry unused).
+// They are designed for zero pitching moment about the quarter chord.
+const REFLEX_R = [0, 0.1300, 0.2170, 0.3180, 0.4410];
+const REFLEX_K1 = [0, 51.990, 15.793, 6.520, 3.191];
+const REFLEX_K21 = [0, 0.000764, 0.00677, 0.0303, 0.1355];
 
 annotation { "Feature Type Name" : "Airfoil wing", "Editing Logic Function" : "airfoilWingEditLogic" }
 export const airfoilWing = defineFeature(function(context is Context, id is Id, definition is map)
@@ -90,44 +111,62 @@ export const airfoilWing = defineFeature(function(context is Context, id is Id, 
         annotation { "Name" : "Mirror about root plane (full wing)" }
         definition.mirror is boolean;
 
-        annotation { "Name" : "Stations (first = root, last = tip)", "Item name" : "station", "Item label template" : "NACA #designation @ #position %" }
+        annotation { "Name" : "Stations (first = root, last = tip)", "Item name" : "station", "Item label template" : "#label @ #position %" }
         definition.stations is array;
         for (var station in definition.stations)
         {
             annotation { "Name" : "Position along span (%)" }
             isReal(station.position, SPAN_PCT_BOUNDS);
 
-            annotation { "Name" : "NACA designation (4-digit e.g. 2412, 5-digit e.g. 23012)", "Default" : "2412" }
-            station.designation is string;
+            annotation { "Name" : "Airfoil source" }
+            station.source is AirfoilSource;
 
-            // Derived from the designation by the editing logic; only used to pick which fields to show.
-            annotation { "Name" : "Series", "UIHint" : UIHint.ALWAYS_HIDDEN }
-            station.family is AirfoilFamily;
+            // Set by the editing logic for the list label ("NACA 2412" or the name in the pasted file).
+            annotation { "Name" : "Label", "UIHint" : UIHint.ALWAYS_HIDDEN }
+            station.label is string;
 
-            annotation { "Name" : "Customize shape (start from the designation's values)" }
-            station.custom is boolean;
-
-            if (station.custom)
+            if (station.source == AirfoilSource.COORDINATES)
             {
-                if (station.family == AirfoilFamily.NACA5)
+                annotation { "Name" : "Coordinates (paste a whole Selig or Lednicer .dat file)" }
+                station.coordinates is string;
+            }
+            else
+            {
+                annotation { "Name" : "NACA designation (4-digit e.g. 2412, 5-digit e.g. 23012)", "Default" : "2412" }
+                station.designation is string;
+
+                // Derived from the designation by the editing logic; only used to pick which fields to show.
+                annotation { "Name" : "Series", "UIHint" : UIHint.ALWAYS_HIDDEN }
+                station.family is AirfoilFamily;
+
+                annotation { "Name" : "Customize shape (start from the designation's values)" }
+                station.custom is boolean;
+
+                if (station.custom)
                 {
-                    annotation { "Name" : "Design CL" }
-                    isReal(station.designCl, DESIGN_CL_BOUNDS);
+                    if (station.family == AirfoilFamily.NACA5)
+                    {
+                        annotation { "Name" : "Design CL" }
+                        isReal(station.designCl, DESIGN_CL_BOUNDS);
 
-                    annotation { "Name" : "Camber position index (1-5 = 5-25% chord)" }
-                    isInteger(station.posIndex, CAMBER_INDEX_BOUNDS);
+                        annotation { "Name" : "Camber position index (1-5 = 5-25% chord)" }
+                        isInteger(station.posIndex, CAMBER_INDEX_BOUNDS);
+
+                        annotation { "Name" : "Reflexed camber line (no pitching moment, index 2-5)" }
+                        station.reflex is boolean;
+                    }
+                    else
+                    {
+                        annotation { "Name" : "Max camber (% chord)" }
+                        isReal(station.camber, CAMBER_BOUNDS);
+
+                        annotation { "Name" : "Camber position (% chord)" }
+                        isReal(station.camberPos, CAMBER_POS_BOUNDS);
+                    }
+
+                    annotation { "Name" : "Thickness (% chord)" }
+                    isReal(station.thickness, THICKNESS_BOUNDS);
                 }
-                else
-                {
-                    annotation { "Name" : "Max camber (% chord)" }
-                    isReal(station.camber, CAMBER_BOUNDS);
-
-                    annotation { "Name" : "Camber position (% chord)" }
-                    isReal(station.camberPos, CAMBER_POS_BOUNDS);
-                }
-
-                annotation { "Name" : "Thickness (% chord)" }
-                isReal(station.thickness, THICKNESS_BOUNDS);
             }
 
             annotation { "Name" : "Chord length" }
@@ -168,6 +207,12 @@ export const airfoilWing = defineFeature(function(context is Context, id is Id, 
 
             annotation { "Name" : "Continue sweep and dihedral of the last segment", "Default" : true }
             definition.tipContinue is boolean;
+
+            if (definition.tip != WingtipTreatment.RAKED)
+            {
+                annotation { "Name" : "Continue chord taper of the last segment", "Default" : true }
+                definition.tipContinueTaper is boolean;
+            }
 
             annotation { "Name" : "Extra tip sweep angle (aft positive)" }
             isAngle(definition.tipSweep, TIP_SWEEP_BOUNDS);
@@ -218,7 +263,7 @@ export const airfoilWing = defineFeature(function(context is Context, id is Id, 
                     { "entities" : qBodyType(qCreatedBy(id, EntityType.BODY), BodyType.SOLID) }))));
     }, { "pointsPerSide" : 40, "closedTE" : true, "tip" : WingtipTreatment.FLAT, "tipSections" : 6, "tipChordRatio" : 0.3, "flip" : false,
             "mirror" : false, "taper" : StationTaper.STRAIGHT, "tipContinue" : true, "tipSweep" : 0 * degree,
-            "tipContinueTwist" : false, "tipTwist" : 0 * degree });
+            "tipContinueTwist" : false, "tipTwist" : 0 * degree, "tipContinueTaper" : false });
 
 /**
  * Builds one half wing running from the root plane along spanDir: one sketch per section, lofted either as a
@@ -258,20 +303,21 @@ function buildHalf(context is Context, id is Id, definition is map, built is map
         profiles = append(profiles, qSketchRegion(sketchId));
     }
 
-    // Each group is a list of section indices that are lofted together.
+    // Each group is a list of section indices that are lofted together: the whole wing when smooth, otherwise each
+    // segment from one station to the next (with any extra sections added for twist).
     var groups = [];
-    if (definition.taper == StationTaper.SMOOTH || tipIndex == 1)
+    var group = [0];
+    for (var i = 1; i <= tipIndex; i += 1)
     {
-        var all = [];
-        for (var i = 0; i <= tipIndex; i += 1)
-            all = append(all, i);
-        groups = append(groups, all);
+        group = append(group, i);
+        if (specs[i].station && definition.taper != StationTaper.SMOOTH)
+        {
+            groups = append(groups, group);
+            group = [i];
+        }
     }
-    else
-    {
-        for (var i = 0; i < tipIndex; i += 1)
-            groups = append(groups, [i, i + 1]);
-    }
+    if (size(group) > 1)
+        groups = append(groups, group);
     if (size(specs) > tipIndex + 1)
     {
         var cap = [];
@@ -361,8 +407,8 @@ function wingReadout(stats is map, volume) returns string
 /** A station map with every field the precondition needs, used to seed a new feature. */
 function seedStation(position is number, designation is string, chord is ValueWithUnits) returns map
 {
-    return { "position" : position, "designation" : designation, "family" : AirfoilFamily.NACA4, "custom" : false,
-            "chord" : chord, "origin" : 25, "aoa" : 0 * degree, "sweep" : 0 * millimeter, "vertical" : 0 * millimeter };
+    return { "position" : position, "source" : AirfoilSource.NACA, "label" : "NACA " ~ designation, "coordinates" : "",
+            "designation" : designation, "family" : AirfoilFamily.NACA4, "custom" : false, "chord" : chord, "origin" : 25, "aoa" : 0 * degree, "sweep" : 0 * millimeter, "vertical" : 0 * millimeter };
 }
 
 /** Keeps only the digits of a designation, so "NACA 2412" and "2412" are equivalent. */
@@ -381,8 +427,9 @@ function nacaDigits(designation is string) returns string
 /**
  * Decodes a NACA designation into shape values (percentages for camber, camberPos, thickness).
  *   4-digit MPTT : max camber M %, at P * 10 % chord, thickness TT %
- *   5-digit LPSTT: design CL = 0.15 * L, camber position index P (P * 5 % chord), S = 0 (standard), thickness TT %
- * Returns { ok, error, family, camber, camberPos, designCl, posIndex, thickness }.
+ *   5-digit LPSTT: design CL = 0.15 * L, camber position index P (P * 5 % chord), S = 0 standard or 1 reflexed,
+ *                  thickness TT %
+ * Returns { ok, error, family, camber, camberPos, designCl, posIndex, reflex, thickness }.
  */
 function parseNaca(designation is string) returns map
 {
@@ -404,30 +451,32 @@ function parseNaca(designation is string) returns map
         return {
                 "ok" : true, "family" : AirfoilFamily.NACA4,
                 "camber" : camber, "camberPos" : (posDigit == 0) ? 40 : posDigit * 10,
-                "designCl" : 0.3, "posIndex" : 3, "thickness" : thickness
+                "designCl" : 0.3, "posIndex" : 3, "reflex" : false, "thickness" : thickness
             };
     }
 
     const liftDigit = stringToNumber(substring(d, 0, 1));
     const posIndex = stringToNumber(substring(d, 1, 2));
     const reflex = stringToNumber(substring(d, 2, 3));
-    if (reflex != 0)
-        return { "ok" : false, "error" : "Reflexed 5-digit airfoils (third digit 1) are not supported yet." };
+    if (reflex > 1)
+        return { "ok" : false, "error" : "5-digit third digit must be 0 (standard) or 1 (reflexed)." };
     if (posIndex < 1 || posIndex > 5)
         return { "ok" : false, "error" : "5-digit camber position digit must be 1 to 5 (210 to 250 series)." };
+    if (reflex == 1 && posIndex == 1)
+        return { "ok" : false, "error" : "Reflexed 5-digit airfoils exist for 221 to 251 only (no 211)." };
     if (liftDigit > 8)
         return { "ok" : false, "error" : "5-digit design lift digit must be 0 to 8." };
     return {
             "ok" : true, "family" : AirfoilFamily.NACA5,
             "camber" : 2, "camberPos" : 40,
-            "designCl" : 0.15 * liftDigit, "posIndex" : posIndex, "thickness" : thickness
+            "designCl" : 0.15 * liftDigit, "posIndex" : posIndex, "reflex" : reflex == 1, "thickness" : thickness
         };
 }
 
 /**
- * Editing logic: seeds a new feature with a root and a tip station, keeps each station's hidden series
- * (4/5-digit) in step with its designation, and when "Customize shape" is switched on, or the designation
- * changes while customizing, fills the editable values from the designation.
+ * Editing logic: seeds a new feature with a root and a tip station, keeps each station's hidden list label and
+ * series (4/5-digit) in step with its designation or pasted coordinates, and when "Customize shape" is switched on,
+ * or the designation changes while customizing, fills the editable values from the designation.
  */
 export function airfoilWingEditLogic(context is Context, id is Id, oldDefinition is map, definition is map,
     isCreating is boolean) returns map
@@ -439,6 +488,13 @@ export function airfoilWingEditLogic(context is Context, id is Id, oldDefinition
     for (var i = 0; i < size(definition.stations); i += 1)
     {
         const st = definition.stations[i];
+        if (st.source == AirfoilSource.COORDINATES)
+        {
+            const coords = parseCoordinates(st.coordinates == undefined ? "" : st.coordinates);
+            definition.stations[i].label = coords.ok ? (coords.name == "" ? "Coordinates" : coords.name) : "Coordinates (not readable)";
+            continue;
+        }
+        definition.stations[i].label = "NACA " ~ nacaDigits(st.designation);
         const parsed = parseNaca(st.designation);
         if (parsed.ok)
             definition.stations[i].family = parsed.family;
@@ -457,6 +513,7 @@ export function airfoilWingEditLogic(context is Context, id is Id, oldDefinition
         {
             definition.stations[i].designCl = naca.designCl;
             definition.stations[i].posIndex = naca.posIndex;
+            definition.stations[i].reflex = naca.reflex;
         }
         else
         {
@@ -469,6 +526,13 @@ export function airfoilWingEditLogic(context is Context, id is Id, oldDefinition
 
 /** Sections per segment (on average) used to follow the smooth curve when the taper is "Smooth". */
 const SMOOTH_SECTIONS_PER_SEGMENT = 8;
+
+/**
+ * Largest change in angle of attack between neighbouring sections. A loft blends corresponding points of two sections
+ * linearly, so a twisted segment comes out short in chord in the middle by about cos(half the twist); extra sections
+ * keep that below cos(5 deg), 0.4 %.
+ */
+const MAX_TWIST_STEP = 10 * degree;
 
 /**
  * Turns the user's stations (plus generated smooth-curve sections and wingtip sections) into a flat list of section
@@ -489,27 +553,44 @@ function buildSpecs(definition is map) returns map
         if (i > 0 && st.position - sorted[i - 1].position < 1e-6)
             throw regenError("Stations must have different span positions.", ["stations"]);
 
+        // Placement, the same for both kinds of station.
+        const placement = {
+                "zLen" : definition.span * st.position / 100,
+                "chord" : st.chord,
+                "origin" : st.origin / 100,
+                "aoa" : st.aoa,
+                "xOff" : st.sweep,
+                "yOff" : st.vertical,
+                "yScale" : 1,
+                "station" : true
+            };
+        if (st.source == AirfoilSource.COORDINATES)
+        {
+            const coords = parseCoordinates(st.coordinates == undefined ? "" : st.coordinates);
+            if (!coords.ok)
+                throw regenError("Station at " ~ st.position ~ " %: " ~ coords.error, ["stations"]);
+            userSpecs = append(userSpecs, mergeMaps(placement, { "family" : AirfoilFamily.NACA4, "coords" : coords }));
+            continue;
+        }
+
         const naca = parseNaca(st.designation);
         if (!naca.ok)
             throw regenError("Station at " ~ st.position ~ " %: " ~ naca.error, ["stations"]);
         // The designation supplies the defaults; "Customize shape" replaces them with the edited values.
         const five = naca.family == AirfoilFamily.NACA5;
 
-        userSpecs = append(userSpecs, {
-                    "zLen" : definition.span * st.position / 100,
+        if (five && st.custom && st.reflex == true && st.posIndex == 1)
+            throw regenError("Station at " ~ st.position ~ " %: a reflexed camber line needs a camber position index of 2 to 5.", ["stations"]);
+
+        userSpecs = append(userSpecs, mergeMaps(placement, {
                     "family" : naca.family,
                     "camber" : five ? 0 : (st.custom ? st.camber : naca.camber) / 100,
                     "camberPos" : five ? 0 : (st.custom ? st.camberPos : naca.camberPos) / 100,
                     "designCl" : five ? (st.custom ? st.designCl : naca.designCl) : 0,
                     "posIndex" : five ? (st.custom ? st.posIndex : naca.posIndex) : 1,
-                    "thickness" : (st.custom ? st.thickness : naca.thickness) / 100,
-                    "chord" : st.chord,
-                    "origin" : st.origin / 100,
-                    "aoa" : st.aoa,
-                    "xOff" : st.sweep,
-                    "yOff" : st.vertical,
-                    "yScale" : 1
-                });
+                    "reflex" : five && (st.custom ? st.reflex == true : naca.reflex),
+                    "thickness" : (st.custom ? st.thickness : naca.thickness) / 100
+                }));
     }
 
     // With a smooth taper the placement of the sections (chord, sweep, dihedral, twist) follows one smooth curve through
@@ -517,10 +598,11 @@ function buildSpecs(definition is map) returns map
     // sections overshoots) and we know the exact slope at the tip station to continue into the wingtip cap.
     const userCount = size(userSpecs);
     const smooth = definition.taper == StationTaper.SMOOTH && userCount > 2;
-    var wingSpecs = userSpecs;
+    var wingSpecs = refineTwist(userSpecs);
     var tipSlopeX = (userSpecs[userCount - 1].xOff - userSpecs[userCount - 2].xOff) / (userSpecs[userCount - 1].zLen - userSpecs[userCount - 2].zLen);
     var tipSlopeY = (userSpecs[userCount - 1].yOff - userSpecs[userCount - 2].yOff) / (userSpecs[userCount - 1].zLen - userSpecs[userCount - 2].zLen);
     var tipSlopeAoa = (userSpecs[userCount - 1].aoa - userSpecs[userCount - 2].aoa) / (userSpecs[userCount - 1].zLen - userSpecs[userCount - 2].zLen);
+    var tipSlopeChord = (userSpecs[userCount - 1].chord - userSpecs[userCount - 2].chord) / (userSpecs[userCount - 1].zLen - userSpecs[userCount - 2].zLen);
     if (smooth)
     {
         const curve = smoothSpecs(userSpecs);
@@ -528,6 +610,7 @@ function buildSpecs(definition is map) returns map
         tipSlopeX = curve.slopeX;
         tipSlopeY = curve.slopeY;
         tipSlopeAoa = curve.slopeAoa * degree / millimeter;
+        tipSlopeChord = curve.slopeChord;
     }
 
     var specs = wingSpecs;
@@ -536,6 +619,9 @@ function buildSpecs(definition is map) returns map
     {
         const tipSpec = wingSpecs[tipIndex];
         const n = definition.tipSections;
+        // Rounded and elliptical caps can carry on the chord taper at the tip station, so the planform has no kink
+        // at the join; the cap shape then scales that continued chord. (A raked tip is a deliberate break.)
+        const continueTaper = definition.tip != WingtipTreatment.RAKED && definition.tipContinueTaper == true;
         const maxAngle = acos(MIN_CAP_SCALE);   // elliptical cap runs from 0 to just short of 90 degrees
         for (var j = 1; j <= n; j += 1)
         {
@@ -547,13 +633,14 @@ function buildSpecs(definition is map) returns map
                 const theta = maxAngle * u;
                 cap.zLen = tipSpec.zLen + definition.tipLength * sin(theta);
                 cap.yScale = cos(theta);
+                cap.chord = baseChord(tipSpec, cap, tipSlopeChord, continueTaper);
             }
             else if (definition.tip == WingtipTreatment.ELLIPTICAL)
             {
                 // Whole section (chord and thickness) shrinks about the origin point.
                 const theta = maxAngle * u;
                 cap.zLen = tipSpec.zLen + definition.tipLength * sin(theta);
-                cap.chord = tipSpec.chord * cos(theta);
+                cap.chord = baseChord(tipSpec, cap, tipSlopeChord, continueTaper) * cos(theta);
             }
             else
             {
@@ -595,10 +682,55 @@ function buildSpecs(definition is map) returns map
 }
 
 /**
+ * Straight taper: the stations, with evenly spaced extra sections in any segment that twists more than MAX_TWIST_STEP.
+ * Their placement is interpolated linearly and their airfoil is a blend of the two stations, so the segment keeps the
+ * same straight taper, sweep and dihedral.
+ */
+function refineTwist(userSpecs is array) returns array
+{
+    var specs = [];
+    for (var k = 0; k < size(userSpecs) - 1; k += 1)
+    {
+        const a = userSpecs[k];
+        const b = userSpecs[k + 1];
+        specs = append(specs, a);
+        const steps = ceil(abs((b.aoa - a.aoa) / MAX_TWIST_STEP) - 1e-9);
+        for (var j = 1; j < steps; j += 1)
+        {
+            const t = j / steps;
+            var section = a;
+            section.station = false;
+            section.zLen = a.zLen + t * (b.zLen - a.zLen);
+            section.chord = a.chord + t * (b.chord - a.chord);
+            section.origin = a.origin + t * (b.origin - a.origin);
+            section.aoa = a.aoa + t * (b.aoa - a.aoa);
+            section.xOff = a.xOff + t * (b.xOff - a.xOff);
+            section.yOff = a.yOff + t * (b.yOff - a.yOff);
+            section.blendA = a;
+            section.blendB = b;
+            section.blendT = t;
+            specs = append(specs, section);
+        }
+    }
+    return append(specs, userSpecs[size(userSpecs) - 1]);
+}
+
+/**
+ * Chord of a cap section before the cap shape is applied: the tip chord, or (when continuing the taper) the tip chord
+ * extended at the taper rate of the tip station, kept above a fifth of the tip chord.
+ */
+function baseChord(tipSpec is map, cap is map, slope is number, continueTaper is boolean) returns ValueWithUnits
+{
+    if (!continueTaper)
+        return tipSpec.chord;
+    return max(tipSpec.chord + slope * (cap.zLen - tipSpec.zLen), 0.2 * tipSpec.chord);
+}
+
+/**
  * Sections along a smooth curve through the stations. Chord, origin, sweep, dihedral and angle of attack are
  * interpolated with a shape-preserving cubic (no overshoot between stations); the section shape between two stations
- * is a blend of the two airfoils. Returns { specs, slopeX, slopeY, slopeAoa } where the slopes are the derivatives
- * at the tip station (mm per mm, mm per mm, degrees per mm).
+ * is a blend of the two airfoils. Returns { specs, slopeX, slopeY, slopeAoa, slopeChord } where the slopes are the
+ * derivatives at the tip station (mm per mm, mm per mm, degrees per mm, mm per mm).
  */
 function smoothSpecs(userSpecs is array) returns map
 {
@@ -630,11 +762,12 @@ function smoothSpecs(userSpecs is array) returns map
     {
         specs = append(specs, userSpecs[k]);
         const h = z[k + 1] - z[k];
-        const intervals = max(2, round(h / spacing));
+        const intervals = max([2, round(h / spacing), ceil(abs(aoa[k + 1] - aoa[k]) / (MAX_TWIST_STEP / degree) - 1e-9)]);
         for (var j = 1; j < intervals; j += 1)
         {
             const t = j / intervals;
             var section = userSpecs[k];
+            section.station = false;
             section.zLen = (z[k] + t * h) * millimeter;
             section.chord = hermite(chord[k], chord[k + 1], dChord[k], dChord[k + 1], h, t) * millimeter;
             section.origin = hermite(origin[k], origin[k + 1], dOrigin[k], dOrigin[k + 1], h, t);
@@ -648,7 +781,8 @@ function smoothSpecs(userSpecs is array) returns map
         }
     }
     specs = append(specs, userSpecs[count - 1]);
-    return { "specs" : specs, "slopeX" : dXOff[count - 1], "slopeY" : dYOff[count - 1], "slopeAoa" : dAoa[count - 1] };
+    return { "specs" : specs, "slopeX" : dXOff[count - 1], "slopeY" : dYOff[count - 1], "slopeAoa" : dAoa[count - 1],
+            "slopeChord" : dChord[count - 1] };
 }
 
 /** Cubic Hermite interpolation on a segment of length h, at fraction t, from end values and end slopes. */
@@ -724,6 +858,8 @@ function airfoilSurfaces(spec is map, n is number, closedTE is boolean) returns 
         }
         return { "upper" : blendedUpper, "lower" : blendedLower };
     }
+    if (spec.coords != undefined)
+        return coordinateSurfaces(spec.coords, n, closedTE);
 
     var upper = [];
     var lower = [];
@@ -753,6 +889,24 @@ function airfoilSurfaces(spec is map, n is number, closedTE is boolean) returns 
                 }
             }
         }
+        else if (spec.reflex)
+        {
+            // Reflexed: the camber line turns back up towards the trailing edge (k21 = k2 / k1).
+            const r = REFLEX_R[spec.posIndex - 1];
+            const k1 = REFLEX_K1[spec.posIndex - 1] * spec.designCl / 0.3;
+            const k21 = REFLEX_K21[spec.posIndex - 1];
+            const tail = k21 * (1 - r) * (1 - r) * (1 - r) + r * r * r;
+            if (x < r)
+            {
+                yc = k1 / 6 * ((x - r) * (x - r) * (x - r) - tail * x + r * r * r);
+                dyc = k1 / 6 * (3 * (x - r) * (x - r) - tail);
+            }
+            else
+            {
+                yc = k1 / 6 * (k21 * (x - r) * (x - r) * (x - r) - tail * x + r * r * r);
+                dyc = k1 / 6 * (3 * k21 * (x - r) * (x - r) - tail);
+            }
+        }
         else
         {
             const r = FIVE_DIGIT_R[spec.posIndex - 1];
@@ -779,6 +933,241 @@ function airfoilSurfaces(spec is map, n is number, closedTE is boolean) returns 
     if (closedTE)
         lower[n - 1] = upper[n - 1];
     return { "upper" : upper, "lower" : lower };
+}
+
+/**
+ * Reads pasted airfoil coordinates. A pasted file may have lost its line breaks, so the name and the numbers run
+ * together: the coordinates are the numbers with a decimal point, and leading ones outside +-1.5 (a "12.5%" in the
+ * name) are skipped. Two whole-number counts matching the number of values after them start a Lednicer file (upper
+ * then lower surface, each leading edge to trailing edge); otherwise it is a Selig file (one loop, trailing edge over
+ * the upper surface to the leading edge and back along the lower surface).
+ * Returns { ok, error, name, upper, lower, closeRamp }: each surface leading edge to trailing edge as [x, y] with the
+ * leading edge (smallest x) at the origin, unit chord, and x strictly increasing; closeRamp as in needsCloseRamp().
+ */
+function parseCoordinates(text is string) returns map
+{
+    // Number-like runs that contain a decimal point.
+    var values = [];
+    var starts = [];
+    const n = length(text);
+    var i = 0;
+    while (i < n)
+    {
+        if (indexOf("0123456789.-+eE", substring(text, i, i + 1)) < 0)
+        {
+            i += 1;
+            continue;
+        }
+        var j = i;
+        while (j < n && indexOf("0123456789.-+eE", substring(text, j, j + 1)) >= 0)
+            j += 1;
+        var token = substring(text, i, j);
+        if (indexOf(token, ".") >= 0)
+        {
+            // Some files write ".5" or "-.5".
+            if (indexOf(token, ".") == 0)
+                token = "0" ~ token;
+            else if (indexOf(token, "-.") == 0)
+                token = "-0" ~ substring(token, 1, length(token));
+            const value = try silent(stringToNumber(token));
+            if (value != undefined)
+            {
+                values = append(values, value);
+                starts = append(starts, i);
+            }
+        }
+        i = j;
+    }
+
+    var k = 0;
+    var lednicer = false;
+    while (k < size(values) && abs(values[k]) > 1.5)
+    {
+        if (k + 1 < size(values) && values[k + 1] > 1.5 && values[k] == round(values[k]) && values[k + 1] == round(values[k + 1])
+            && size(values) - k - 2 == 2 * (values[k] + values[k + 1]))
+        {
+            lednicer = true;
+            break;
+        }
+        k += 1;
+    }
+
+    var upper = [];
+    var lower = [];
+    var nameEnd = 0;
+    if (lednicer)
+    {
+        nameEnd = starts[k];
+        const upperCount = values[k];
+        for (var m = k + 2; m + 1 < size(values); m += 2)
+        {
+            if ((m - k - 2) / 2 < upperCount)
+                upper = append(upper, [values[m], values[m + 1]]);
+            else
+                lower = append(lower, [values[m], values[m + 1]]);
+        }
+    }
+    else
+    {
+        if ((size(values) - k) % 2 == 1)
+            k += 1;
+        if (size(values) - k < 12)
+            return { "ok" : false, "error" : "No airfoil coordinates found (paste the .dat file: x y pairs with decimal points, at least 6 points)." };
+        nameEnd = starts[k];
+        var points = [];
+        for (var m = k; m + 1 < size(values); m += 2)
+            points = append(points, [values[m], values[m + 1]]);
+        var nose = 0;
+        for (var m = 1; m < size(points); m += 1)
+        {
+            if (points[m][0] < points[nose][0])
+                nose = m;
+        }
+        for (var m = nose; m >= 0; m -= 1)
+            upper = append(upper, points[m]);
+        for (var m = nose; m < size(points); m += 1)
+            lower = append(lower, points[m]);
+    }
+
+    // Leading edge (smallest x) to the origin, unit chord.
+    var lead = upper[0];
+    var xMax = upper[0][0];
+    for (var p in concatenateArrays([upper, lower]))
+    {
+        if (p[0] < lead[0])
+            lead = p;
+        xMax = max(xMax, p[0]);
+    }
+    const chord = xMax - lead[0];
+    if (chord < 1e-9)
+        return { "ok" : false, "error" : "The pasted coordinates have no chord length." };
+    upper = normaliseSide(upper, lead, chord);
+    lower = normaliseSide(lower, lead, chord);
+    if (size(upper) < 3 || size(lower) < 3)
+        return { "ok" : false, "error" : "The pasted coordinates need at least 3 points on each surface." };
+    if (meanY(upper) < meanY(lower))
+    {
+        const swap = upper;
+        upper = lower;
+        lower = swap;
+    }
+
+    // Name: the text before the coordinates, without surrounding spaces.
+    var a = 0;
+    var b = nameEnd;
+    while (a < b && indexOf(" \t\r\n", substring(text, a, a + 1)) >= 0)
+        a += 1;
+    while (b > a && indexOf(" \t\r\n", substring(text, b - 1, b)) >= 0)
+        b -= 1;
+    return { "ok" : true, "name" : substring(text, a, b), "upper" : upper, "lower" : lower,
+            "closeRamp" : needsCloseRamp(upper, lower) };
+}
+
+/**
+ * True when closing the trailing edge with a linear pinch (gap * x) would make the section cross itself, checked on a
+ * fine grid: a blunt edge whose surfaces spread apart towards the end (e.g. sc2110).
+ */
+function needsCloseRamp(upper is array, lower is array) returns boolean
+{
+    var xs = [];
+    for (var i = 0; i < CLOSE_CHECK_POINTS; i += 1)
+        xs = append(xs, 0.5 * (1 - cos(PI * radian * (i / (CLOSE_CHECK_POINTS - 1)))));
+    const yUpper = resampleSide(upper, xs);
+    const yLower = resampleSide(lower, xs);
+    const last = CLOSE_CHECK_POINTS - 1;
+    const gap = yUpper[last] - yLower[last];
+    for (var i = 1; i < last; i += 1)
+    {
+        if (yUpper[i] - yLower[i] - gap * xs[i] <= 0)
+            return true;
+    }
+    return false;
+}
+
+/** Scales one surface to unit chord with the leading edge at the origin, keeping only points with increasing x. */
+function normaliseSide(side is array, lead is array, chord is number) returns array
+{
+    var out = [];
+    for (var p in side)
+    {
+        const q = [(p[0] - lead[0]) / chord, (p[1] - lead[1]) / chord];
+        if (size(out) == 0 || q[0] > out[size(out) - 1][0] + 1e-9)
+            out = append(out, q);
+    }
+    return out;
+}
+
+function meanY(side is array) returns number
+{
+    var total = 0;
+    for (var p in side)
+        total += p[1];
+    return total / size(side);
+}
+
+/**
+ * Pasted coordinates resampled at the same cosine-spaced x as the NACA sections (so sections still blend point by
+ * point), with a shape-preserving cubic through the points of each surface. A closed trailing edge pinches the two
+ * surfaces together in proportion to x, or, where that would cross (closeRamp), tapers the thickness to zero over the
+ * last part of the chord about the mean line; an open one is widened in proportion to x to at least MIN_OPEN_GAP.
+ */
+function coordinateSurfaces(coords is map, n is number, closedTE is boolean) returns map
+{
+    var xs = [];
+    for (var i = 0; i < n; i += 1)
+        xs = append(xs, 0.5 * (1 - cos(PI * radian * (i / (n - 1)))));
+    const yUpper = resampleSide(coords.upper, xs);
+    const yLower = resampleSide(coords.lower, xs);
+    const gap = yUpper[n - 1] - yLower[n - 1];
+    var shift = 0;
+    if (closedTE)
+        shift = -gap / 2;
+    else if (gap < MIN_OPEN_GAP)
+        shift = (MIN_OPEN_GAP - gap) / 2;
+
+    var upper = [];
+    var lower = [];
+    for (var i = 0; i < n; i += 1)
+    {
+        if (closedTE && coords.closeRamp)
+        {
+            const s = xs[i] > CLOSE_RAMP_START ? ((xs[i] - CLOSE_RAMP_START) / (1 - CLOSE_RAMP_START)) ^ 2 : 0;
+            const mid = (yUpper[i] + yLower[i]) / 2;
+            const half = (yUpper[i] - yLower[i]) * (1 - s) / 2;
+            upper = append(upper, [xs[i], mid + half]);
+            lower = append(lower, [xs[i], mid - half]);
+            continue;
+        }
+        upper = append(upper, [xs[i], yUpper[i] + shift * xs[i]]);
+        lower = append(lower, [xs[i], yLower[i] - shift * xs[i]]);
+    }
+    lower[0] = upper[0];
+    if (closedTE)
+        lower[n - 1] = upper[n - 1];
+    return { "upper" : upper, "lower" : lower };
+}
+
+/** y of one surface at each x of xs (increasing), from a shape-preserving cubic through its points. */
+function resampleSide(side is array, xs is array) returns array
+{
+    var x = [];
+    var y = [];
+    for (var p in side)
+    {
+        x = append(x, p[0]);
+        y = append(y, p[1]);
+    }
+    const slopes = pchipSlopes(x, y);
+    var out = [];
+    var k = 0;
+    for (var xi in xs)
+    {
+        while (k < size(x) - 2 && xi > x[k + 1])
+            k += 1;
+        const h = x[k + 1] - x[k];
+        out = append(out, hermite(y[k], y[k + 1], slopes[k], slopes[k + 1], h, (xi - x[k]) / h));
+    }
+    return out;
 }
 
 /** NACA four-digit half-thickness. The x^4 coefficient -0.1036 closes the trailing edge exactly; -0.1015 leaves it open. */

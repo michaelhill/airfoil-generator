@@ -4,6 +4,7 @@ import sys, re, glob, os
 import numpy as np
 
 K5 = {1: (0.0580, 361.4), 2: (0.1260, 51.64), 3: (0.2025, 15.957), 4: (0.2900, 6.643), 5: (0.3910, 3.230)}
+K5R = {2: (0.1300, 51.990, 0.000764), 3: (0.2170, 15.793, 0.00677), 4: (0.3180, 6.520, 0.0303), 5: (0.4410, 3.191, 0.1355)}
 
 def thickness(x, t, closed=True):
     a4 = -0.1036 if closed else -0.1015
@@ -16,7 +17,13 @@ def camber4(x, m, p):
     dy = np.where(f, 2*m/p**2*(p - x), 2*m/(1-p)**2*(p - x))
     return yc, dy
 
-def camber5(x, cl, pidx):
+def camber5(x, cl, pidx, reflex=False):
+    if reflex:
+        r, k1, k21 = K5R[pidx]; k1 *= cl/0.3; tail = k21*(1-r)**3 + r**3
+        f = x < r
+        yc = np.where(f, k1/6*((x-r)**3 - tail*x + r**3), k1/6*(k21*(x-r)**3 - tail*x + r**3))
+        dy = np.where(f, k1/6*(3*(x-r)**2 - tail), k1/6*(3*k21*(x-r)**2 - tail))
+        return yc, dy
     r, k1 = K5[pidx]; k1 *= cl/0.3
     f = x < r
     yc = np.where(f, k1/6*(x**3 - 3*r*x**2 + r*r*(3-r)*x), k1*r**3/6*(1-x))
@@ -48,7 +55,7 @@ def parse(name):
     if len(d) == 4:
         m, p, t = int(d[0])/100, int(d[1])/10, int(d[2:])/100
         return (lambda x: camber4(x, m, p)), t
-    return (lambda x: camber5(x, 0.15*int(d[0]), int(d[1]))), int(d[3:])/100
+    return (lambda x: camber5(x, 0.15*int(d[0]), int(d[1]), d[2] == '1')), int(d[3:])/100
 
 if __name__ == '__main__':
     for f in sorted(glob.glob(os.path.join(sys.argv[1], '*.dat'))):
