@@ -215,6 +215,37 @@ export const wingTest = defineFeature(function(context is Context, id is Id, def
             }
             throw regenError(out ~ "expect x 270/286.5/290/306.5");
         }
+        if (SUITE == "six")
+        {
+            // Designation parsing (kind and family), section y at cosine indices 8, 20, 36 of 40 (closed TE) against
+            // tools/naca_reference.py section(), then a 652-415 -> 64A010 smooth wing with a rounded tip and a
+            // 16-212 -> 0010-64 straight wing.
+            var out = "";
+            for (var d in ["63(2)-415", "632-415", "64A010", "16-212", "0010-64", "6409", "65-410 a=0.5", "68-412", "64A010 a=2"])
+            {
+                const parsed = parseNaca(d);
+                out = out ~ (parsed.ok ? parsed.kind ~ (parsed.sixFamily != undefined && parsed.sixFamily >= 0 ? SIX_FAMILIES[parsed.sixFamily] : "") : "X") ~ " ";
+            }
+            for (var d in ["63-412", "64A410", "65-410 a=0.5", "16-212", "0010-64"])
+            {
+                const naca = parseNaca(d);
+                var spec = { "family" : naca.family, "camber" : naca.camber / 100, "camberPos" : naca.camberPos / 100,
+                        "designCl" : naca.designCl, "posIndex" : naca.posIndex, "reflex" : naca.reflex, "thickness" : naca.thickness / 100,
+                        "meanA" : naca.family == AirfoilFamily.NACA6 ? naca.meanA : 1 };
+                if (naca.kind == "4M" || naca.kind == "16")
+                    spec.fourModified = fourModifiedCoefficients(naca.thickness / 100, naca.leIndex, naca.xMaxThickness);
+                if (naca.kind == "6" || naca.kind == "6A")
+                    spec.sixThickness = sixThickness(naca.sixFamily, naca.thickness / 100);
+                const surfaces = airfoilSurfaces(spec, 40, true);
+                out = out ~ "| " ~ d;
+                for (var i in [8, 20, 36])
+                    out = out ~ " " ~ roundToPrecision(surfaces.upper[i][1], 5) ~ "/" ~ roundToPrecision(surfaces.lower[i][1], 5);
+            }
+            out = out ~ " | " ~ report(context, id + "a", "SM", [stn(0, "652-415", 200 * millimeter), stn(100, "64A010", 120 * millimeter)],
+                    { "taper" : StationTaper.SMOOTH, "tip" : WingtipTreatment.ROUNDED });
+            out = out ~ " " ~ report(context, id + "b", "ST", [stn(0, "16-212", 200 * millimeter), stn(100, "0010-64", 120 * millimeter)], {});
+            throw regenError(out);
+        }
         if (SUITE == "coords")
         {
             // Pasted coordinates (line breaks removed, as from a one-line text field): a Selig file (UIUC naca2412) and

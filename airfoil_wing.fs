@@ -18,7 +18,9 @@ import(path : "onshape/std/common.fs", version : "3095.0");
  *     section rotates about (25 % = quarter-chord line, the usual choice)
  *   - positive angle of attack pitches the nose up (+Y)
  *
- * Math: NACA 4-digit (Abbott & von Doenhoff), NACA 5-digit standard (2x0) and reflexed (2x1) camber lines.
+ * Math: NACA 4-digit and 4-digit modified (Abbott & von Doenhoff), NACA 5-digit standard (2x0) and reflexed (2x1)
+ * camber lines, NACA 16-series, and NACA 6- and 6A-series (thickness by conformal mapping from the epsilon / psi
+ * functions, as in Carmichael's public domain naca456 program; a= and modified a=0.8 mean lines).
  * A station can instead use pasted coordinates (Selig or Lednicer .dat, e.g. from the UIUC database).
  * Reference implementations / UIUC comparison: tools/naca_reference.py, tools/dat_reference.py
  */
@@ -28,7 +30,9 @@ export enum AirfoilFamily
     annotation { "Name" : "NACA 4-digit" }
     NACA4,
     annotation { "Name" : "NACA 5-digit" }
-    NACA5
+    NACA5,
+    annotation { "Name" : "NACA 6, 6A or 16-series" }
+    NACA6
 }
 
 export enum AirfoilSource
@@ -89,6 +93,71 @@ const MIN_CAP_SCALE = 0.03;
 // NACA 5-digit standard camber-line constants for 210, 220, 230, 240, 250 (design CL = 0.3).
 const FIVE_DIGIT_R = [0.0580, 0.1260, 0.2025, 0.2900, 0.3910];
 const FIVE_DIGIT_K1 = [361.4, 51.64, 15.957, 6.643, 3.230];
+// NACA 6- and 6A-series thickness families, in the order of the tables below.
+const SIX_FAMILIES = ["63", "64", "65", "66", "67", "63A", "64A", "65A"];
+// The epsilon and psi functions of the conformal mapping that defines each family, and their slopes, at 21 knots
+// (from naca456's epspsi.f90, public domain; cubic Hermite between the knots reproduces naca456's 201-point tables to
+// within 0.0001 chord). Multiplied by a polynomial in t/c (SIX_SCALE, naca456's ScaleFactor) they give the
+// thickness distribution for that t/c.
+// epsilon(phi) at phi = k * pi / 20, k = 0..20
+const SIX_EPS = [
+        [0.00000, 0.01367, 0.01661, 0.01884, 0.02268, 0.02801, 0.03465, 0.04237, 0.05098, 0.06011, 0.06832, 0.07464, 0.07848, 0.07938, 0.07685, 0.07070, 0.06103, 0.04834, 0.03333, 0.01698, 0.00000],   // 63
+        [0.00000, 0.02035, 0.02812, 0.03090, 0.03538, 0.04250, 0.05208, 0.06395, 0.07808, 0.09462, 0.11125, 0.12386, 0.13182, 0.13459, 0.13166, 0.12261, 0.10735, 0.08645, 0.06052, 0.03113, 0.00000],   // 64
+        [0.00000, 0.01515, 0.01943, 0.01715, 0.01821, 0.02211, 0.02772, 0.03510, 0.04404, 0.05467, 0.06653, 0.07771, 0.08614, 0.09017, 0.08982, 0.08427, 0.07368, 0.05228, 0.02939, 0.01302, 0.00000],   // 65
+        [0.00000, 0.01340, 0.01940, 0.01450, 0.01350, 0.01530, 0.01890, 0.02390, 0.03020, 0.03770, 0.04670, 0.05730, 0.07020, 0.08180, 0.08850, 0.08940, 0.08390, 0.07190, 0.05290, 0.02810, 0.00000],   // 66
+        [0.00000, 0.01591, 0.02259, 0.02126, 0.01979, 0.01997, 0.02135, 0.02386, 0.02752, 0.03232, 0.03849, 0.04622, 0.05610, 0.06814, 0.08009, 0.08659, 0.08602, 0.06908, 0.04301, 0.02049, 0.00000],   // 67
+        [0.00000, 0.01405, 0.01751, 0.01813, 0.02134, 0.02569, 0.03125, 0.03759, 0.04496, 0.05243, 0.05921, 0.06422, 0.06714, 0.06720, 0.06441, 0.05896, 0.05152, 0.03959, 0.02589, 0.01279, 0.00000],   // 63A
+        [0.00000, 0.01507, 0.01899, 0.01846, 0.02010, 0.02306, 0.02749, 0.03295, 0.03984, 0.04772, 0.05554, 0.06147, 0.06508, 0.06586, 0.06376, 0.05881, 0.05168, 0.03997, 0.02630, 0.01304, 0.00000],   // 64A
+        [0.00000, 0.01413, 0.01804, 0.01642, 0.01545, 0.01708, 0.02075, 0.02522, 0.03122, 0.03806, 0.04610, 0.05356, 0.05931, 0.06227, 0.06254, 0.05948, 0.05343, 0.04234, 0.02847, 0.01430, 0.00000]   // 65A
+    ];
+// psi(phi)
+const SIX_PSI = [
+        [0.15066, 0.14497, 0.13753, 0.13576, 0.13547, 0.13511, 0.13414, 0.13194, 0.12808, 0.12160, 0.11218, 0.10029, 0.08657, 0.07153, 0.05591, 0.04065, 0.02682, 0.01527, 0.00680, 0.00169, 0.00000],   // 63
+        [0.25269, 0.24730, 0.23325, 0.22818, 0.22730, 0.22751, 0.22736, 0.22584, 0.22203, 0.21449, 0.19966, 0.17950, 0.15596, 0.13024, 0.10338, 0.07671, 0.05193, 0.03051, 0.01385, 0.00353, 0.00000],   // 64
+        [0.17464, 0.16808, 0.15523, 0.15235, 0.15350, 0.15536, 0.15678, 0.15731, 0.15653, 0.15393, 0.14779, 0.13680, 0.12154, 0.10353, 0.08401, 0.06385, 0.04422, 0.02590, 0.01154, 0.00289, 0.00000],   // 65
+        [0.16457, 0.16037, 0.14604, 0.14236, 0.14366, 0.14601, 0.14790, 0.14917, 0.14961, 0.14908, 0.14725, 0.14360, 0.13615, 0.12108, 0.10180, 0.07989, 0.05733, 0.03566, 0.01705, 0.00439, 0.00000],   // 66
+        [0.18028, 0.17403, 0.16085, 0.15278, 0.15048, 0.14982, 0.15002, 0.15046, 0.15095, 0.15110, 0.15076, 0.14945, 0.14628, 0.13974, 0.12560, 0.10386, 0.07840, 0.04935, 0.02327, 0.00615, 0.00000],   // 67
+        [0.15517, 0.14634, 0.13753, 0.13521, 0.13468, 0.13420, 0.13322, 0.13131, 0.12792, 0.12228, 0.11416, 0.10395, 0.09221, 0.07941, 0.06650, 0.05441, 0.04315, 0.03186, 0.02464, 0.02248, 0.02243],   // 63A
+        [0.15365, 0.14473, 0.13407, 0.13038, 0.12949, 0.12942, 0.12925, 0.12841, 0.12652, 0.12281, 0.11554, 0.10568, 0.09416, 0.08147, 0.06848, 0.05604, 0.04450, 0.03288, 0.02524, 0.02266, 0.02243],   // 64A
+        [0.14761, 0.13785, 0.12892, 0.12219, 0.12279, 0.12387, 0.12472, 0.12502, 0.12448, 0.12266, 0.11859, 0.11122, 0.10107, 0.08921, 0.07622, 0.06275, 0.04985, 0.03695, 0.02763, 0.02341, 0.02242]   // 65A
+    ];
+// d epsilon / d phi
+const SIX_DEPS = [
+        [0.10430, 0.05153, 0.00681, 0.01998, 0.02920, 0.03837, 0.04595, 0.05211, 0.05751, 0.05667, 0.04699, 0.03286, 0.01562, -0.00479, -0.02757, -0.05069, -0.07181, -0.08912, -0.10075, -0.10680, -0.10860],   // 63
+        [0.14800, 0.09163, 0.02253, 0.01975, 0.03711, 0.05334, 0.06847, 0.08243, 0.09837, 0.10984, 0.09576, 0.06556, 0.03485, -0.00004, -0.03776, -0.07771, -0.11568, -0.15018, -0.17797, -0.19447, -0.20000],   // 64
+        [0.10460, 0.06791, -0.00515, -0.00912, 0.01835, 0.03047, 0.04140, 0.05202, 0.06220, 0.07293, 0.07561, 0.06468, 0.04022, 0.01243, -0.01965, -0.04651, -0.10257, -0.15418, -0.12661, -0.08921, -0.07785],   // 65
+        [0.09184, 0.07101, -0.00538, -0.02849, 0.00665, 0.01719, 0.02775, 0.03608, 0.04375, 0.05249, 0.06143, 0.07614, 0.08282, 0.06048, 0.02475, -0.01433, -0.05527, -0.09880, -0.14157, -0.17144, -0.18300],   // 66
+        [0.10740, 0.07861, 0.00960, -0.01482, -0.00378, 0.00531, 0.01233, 0.01968, 0.02679, 0.03473, 0.04380, 0.05554, 0.07036, 0.08166, 0.06117, 0.02604, -0.05207, -0.15219, -0.16061, -0.13335, -0.12740],   // 67
+        [0.09522, 0.05936, 0.00176, 0.01151, 0.02535, 0.03149, 0.03797, 0.04390, 0.04828, 0.04641, 0.03824, 0.02582, 0.00995, -0.00869, -0.02732, -0.03940, -0.06125, -0.08553, -0.08613, -0.08180, -0.08114],   // 63A
+        [0.10100, 0.06557, -0.00058, 0.00152, 0.01572, 0.02346, 0.03158, 0.03912, 0.04780, 0.05175, 0.04503, 0.03072, 0.01429, -0.00402, -0.02342, -0.03693, -0.05956, -0.08464, -0.08661, -0.08324, -0.08273],   // 64A
+        [0.09403, 0.06306, -0.00175, -0.01234, 0.00163, 0.01841, 0.02595, 0.03326, 0.04099, 0.04800, 0.05120, 0.04325, 0.02811, 0.01066, -0.00906, -0.02769, -0.05416, -0.08301, -0.09051, -0.09048, -0.09132]   // 65A
+    ];
+// d psi / d phi
+const SIX_DPSI = [
+        [0.00000, -0.05528, -0.02966, -0.00199, -0.00173, -0.00351, -0.00963, -0.01852, -0.03205, -0.05077, -0.06853, -0.08210, -0.09217, -0.09850, -0.09941, -0.09362, -0.08169, -0.06433, -0.04335, -0.02163, 0.00000],   // 63
+        [0.00000, -0.07538, -0.06976, -0.01074, -0.00091, 0.00159, -0.00432, -0.01621, -0.03263, -0.07005, -0.11441, -0.14057, -0.15792, -0.16855, -0.17207, -0.16552, -0.14847, -0.12295, -0.08699, -0.04438, 0.00000],   // 64
+        [0.00000, -0.07862, -0.05623, 0.00311, 0.01077, 0.01132, 0.00659, -0.00045, -0.00957, -0.02581, -0.05410, -0.08493, -0.10751, -0.12044, -0.12748, -0.12746, -0.12261, -0.10688, -0.07399, -0.03660, 0.00000],   // 65
+        [0.00000, -0.07127, -0.06881, 0.00254, 0.01318, 0.01443, 0.01006, 0.00567, -0.00008, -0.00709, -0.01666, -0.03095, -0.07154, -0.11299, -0.13253, -0.14356, -0.14253, -0.13104, -0.10260, -0.05576, 0.00000],   // 66
+        [0.00000, -0.07383, -0.07578, -0.02892, -0.00661, -0.00118, 0.00255, 0.00322, 0.00235, -0.00039, -0.00442, -0.01344, -0.02739, -0.06246, -0.11774, -0.15184, -0.17636, -0.18379, -0.14138, -0.07576, 0.00000],   // 67
+        [0.00000, -0.07598, -0.03297, -0.00471, -0.00261, -0.00413, -0.00874, -0.01609, -0.02811, -0.04394, -0.05895, -0.07036, -0.07884, -0.08295, -0.08039, -0.07297, -0.07370, -0.06291, -0.02818, -0.00351, 0.00000],   // 63A
+        [0.00000, -0.08211, -0.04550, -0.00997, -0.00211, 0.00007, -0.00276, -0.00833, -0.01605, -0.03440, -0.05603, -0.06863, -0.07777, -0.08268, -0.08196, -0.07514, -0.07546, -0.06533, -0.03105, -0.00565, 0.00000],   // 64A
+        [0.00000, -0.07655, -0.05077, -0.01947, 0.01158, 0.00524, 0.00431, -0.00053, -0.00678, -0.01742, -0.03604, -0.05689, -0.07099, -0.07951, -0.08556, -0.08361, -0.08364, -0.07457, -0.04244, -0.01427, 0.00000]   // 65A
+    ];
+const SIX_SCALE = [
+        [0.0, 8.1827699, 1.3776209, -0.092851684, 7.5942563],
+        [0.0, 4.6535511, 1.038063, -1.5041794, 4.7882784],
+        [0.0, 6.5718716, 0.49376292, 0.7319794, 1.9491474],
+        [0.0, 6.7581414, 0.19253769, 0.81282621, 0.85202897],
+        [0.0, 6.627289, 0.098965859, 0.96759774, 0.90537584],
+        [0.0, 8.1845925, 1.0492569, 1.31150930, 4.4515579],
+        [0.0, 8.2125018, 0.76855961, 1.4922345, 3.6130133],
+        [0.0, 8.2514822, 0.46569361, 1.50113018, 2.0908904]
+    ];
+// Points along the conformal mapping (phi = 0..pi) for a 6-series thickness distribution.
+const SIX_POINTS = 201;
+// Modified 4-digit: trailing-edge half angle d1 as a polynomial in the max-thickness position (naca456 CalculateD1).
+const FOUR_MOD_D1 = [3.48e-5, 2.3076628, -10.127712, 19.961478, -10.420597];
+
 // Reflexed camber lines 221, 231, 241, 251 (no 211): r, k1 and k2/k1, indexed like the above (first entry unused).
 // They are designed for zero pitching moment about the quarter chord.
 const REFLEX_R = [0, 0.1300, 0.2170, 0.3180, 0.4410];
@@ -132,7 +201,7 @@ export const airfoilWing = defineFeature(function(context is Context, id is Id, 
             }
             else
             {
-                annotation { "Name" : "NACA designation (4-digit e.g. 2412, 5-digit e.g. 23012)", "Default" : "2412" }
+                annotation { "Name" : "NACA designation (e.g. 2412, 23012, 0010-64, 16-212, 63-412, 64A010, 65-410 a=0.5)", "Default" : "2412" }
                 station.designation is string;
 
                 // Derived from the designation by the editing logic; only used to pick which fields to show.
@@ -144,24 +213,29 @@ export const airfoilWing = defineFeature(function(context is Context, id is Id, 
 
                 if (station.custom)
                 {
-                    if (station.family == AirfoilFamily.NACA5)
-                    {
-                        annotation { "Name" : "Design CL" }
-                        isReal(station.designCl, DESIGN_CL_BOUNDS);
-
-                        annotation { "Name" : "Camber position index (1-5 = 5-25% chord)" }
-                        isInteger(station.posIndex, CAMBER_INDEX_BOUNDS);
-
-                        annotation { "Name" : "Reflexed camber line (no pitching moment, index 2-5)" }
-                        station.reflex is boolean;
-                    }
-                    else
+                    // Each parameter may be declared only once in the precondition, so Design CL (5-digit, 6, 6A and
+                    // 16-series) sits in one branch with the 5-digit extras nested inside it.
+                    if (station.family == AirfoilFamily.NACA4)
                     {
                         annotation { "Name" : "Max camber (% chord)" }
                         isReal(station.camber, CAMBER_BOUNDS);
 
                         annotation { "Name" : "Camber position (% chord)" }
                         isReal(station.camberPos, CAMBER_POS_BOUNDS);
+                    }
+                    else
+                    {
+                        annotation { "Name" : "Design CL" }
+                        isReal(station.designCl, DESIGN_CL_BOUNDS);
+
+                        if (station.family == AirfoilFamily.NACA5)
+                        {
+                            annotation { "Name" : "Camber position index (1-5 = 5-25% chord)" }
+                            isInteger(station.posIndex, CAMBER_INDEX_BOUNDS);
+
+                            annotation { "Name" : "Reflexed camber line (no pitching moment, index 2-5)" }
+                            station.reflex is boolean;
+                        }
                     }
 
                     annotation { "Name" : "Thickness (% chord)" }
@@ -411,29 +485,116 @@ function seedStation(position is number, designation is string, chord is ValueWi
             "designation" : designation, "family" : AirfoilFamily.NACA4, "custom" : false, "chord" : chord, "origin" : 25, "aoa" : 0 * degree, "sweep" : 0 * millimeter, "vertical" : 0 * millimeter };
 }
 
-/** Keeps only the digits of a designation, so "NACA 2412" and "2412" are equivalent. */
-function nacaDigits(designation is string) returns string
-{
-    var digits = "";
-    for (var i = 0; i < length(designation); i += 1)
-    {
-        const c = substring(designation, i, i + 1);
-        if (indexOf("0123456789", c) >= 0)
-            digits = digits ~ c;
-    }
-    return digits;
-}
-
 /**
  * Decodes a NACA designation into shape values (percentages for camber, camberPos, thickness).
- *   4-digit MPTT : max camber M %, at P * 10 % chord, thickness TT %
- *   5-digit LPSTT: design CL = 0.15 * L, camber position index P (P * 5 % chord), S = 0 standard or 1 reflexed,
- *                  thickness TT %
- * Returns { ok, error, family, camber, camberPos, designCl, posIndex, reflex, thickness }.
+ *   4-digit MPTT          : max camber M %, at P * 10 % chord, thickness TT %
+ *   4-digit modified MPTT-IX: as 4-digit, leading-edge radius index I, max thickness at X * 10 % chord
+ *   5-digit LPSTT         : design CL = 0.15 * L, camber position index P (P * 5 % chord), S = 0 standard or
+ *                           1 reflexed, thickness TT %
+ *   16-series 16-CTT      : 4-digit modified thickness with I = 4, X = 5; a=1.0 mean line, design CL C / 10
+ *   6-series 6F-CTT       : family 63..67 (a low-drag range subscript such as 63(2)-, 63_2- or 632- is ignored),
+ *                           design CL C / 10, thickness TT %; a=1.0 mean line unless "a=..." is given
+ *   6A-series 6FACTT      : family 63A..65A, modified a=0.8 mean line unless "a=..." is given
+ * Spaces, a leading "NACA" and brackets are ignored. Returns { ok, error, name, kind, family, camber, camberPos,
+ * designCl, posIndex, reflex, thickness, sixFamily, meanA, leIndex, xMaxThickness } where kind is "4", "4M", "5",
+ * "16", "6" or "6A", sixFamily indexes SIX_FAMILIES and meanA is the a= value (-1 for the modified a=0.8 line).
  */
 function parseNaca(designation is string) returns map
 {
-    const d = nacaDigits(designation);
+    // Keep digits, dashes, and an "A" that follows a digit; read "a=0.5"; drop everything else.
+    var core = "";
+    var meanA = undefined;
+    const n = length(designation);
+    var i = 0;
+    while (i < n)
+    {
+        const c = substring(designation, i, i + 1);
+        if ((c == "a" || c == "A") && i + 1 < n && substring(designation, i + 1, i + 2) == "=")
+        {
+            var j = i + 2;
+            while (j < n && indexOf("0123456789.", substring(designation, j, j + 1)) >= 0)
+                j += 1;
+            meanA = try silent(stringToNumber(substring(designation, i + 2, j)));
+            if (meanA == undefined || meanA < 0 || meanA > 1)
+                return { "ok" : false, "error" : "The mean line \"a=\" value must be between 0 and 1 (in \"" ~ designation ~ "\")." };
+            i = j;
+            continue;
+        }
+        if (indexOf("0123456789-", c) >= 0)
+            core = core ~ c;
+        else if ((c == "a" || c == "A") && length(core) > 0 && indexOf("0123456789", substring(core, length(core) - 1, length(core))) >= 0)
+            core = core ~ "A";
+        i += 1;
+    }
+    const bad = { "ok" : false, "error" : "Unknown NACA designation \"" ~ designation ~ "\" (use e.g. 2412, 23012, 0010-64, 16-212, 63-412, 64A010)." };
+    const name = core ~ (meanA == undefined ? "" : " a=" ~ meanA);
+
+    const dash = indexOf(core, "-");
+    if (dash >= 0)
+    {
+        const left = substring(core, 0, dash);
+        const right = substring(core, dash + 1, length(core));
+        if (!allDigits(right) || length(left) < 2)
+            return bad;
+        if (length(left) == 4 && allDigits(left) && length(right) == 2)
+        {
+            // 4-digit modified: the 4-digit camber and thickness with a leading-edge index and max-thickness position.
+            const four = parseFourFive(left, designation);
+            if (!four.ok || meanA != undefined)
+                return four.ok ? bad : four;
+            const leIndex = digitAt(right, 0);
+            const xMax = digitAt(right, 1);
+            if (xMax < 2 || xMax > 6)
+                return { "ok" : false, "error" : "4-digit modified: the max thickness position digit (after the dash) must be 2 to 6." };
+            return mergeMaps(four, { "kind" : "4M", "name" : name, "leIndex" : leIndex, "xMaxThickness" : xMax / 10 });
+        }
+        if (length(right) != 3)
+            return bad;
+        const cl = digitAt(right, 0) / 10;
+        const thickness = stringToNumber(substring(right, 1, 3));
+        if (thickness < 1 || thickness > 40)
+            return { "ok" : false, "error" : "Thickness in the designation must be 01 to 40 (got " ~ thickness ~ ")." };
+        if (left == "16")
+            return sixResult(name, "16", -1, cl, thickness, meanA == undefined ? 1 : meanA, 4, 0.5);
+        const six = sixFamilyIndex(left);
+        if (six < 0)
+            return bad;
+        const isA = six >= 5;
+        return sixResult(name, isA ? "6A" : "6", six, cl, thickness, meanA != undefined ? meanA : (isA ? -1 : 1), 0, 0);
+    }
+
+    // 6A-series written without a dash: 64A010, 63A210.
+    if (length(core) == 6 && indexOf(core, "A") == 2)
+    {
+        const six = sixFamilyIndex(substring(core, 0, 3));
+        const right = substring(core, 3, 6);
+        if (six < 0 || !allDigits(right))
+            return bad;
+        const thickness = stringToNumber(substring(right, 1, 3));
+        if (thickness < 1 || thickness > 40)
+            return { "ok" : false, "error" : "Thickness in the designation must be 01 to 40 (got " ~ thickness ~ ")." };
+        return sixResult(name, "6A", six, digitAt(right, 0) / 10, thickness, meanA != undefined ? meanA : -1, 0, 0);
+    }
+    if (!allDigits(core))
+        return bad;
+    // 6-series written as six digits with the subscript: 632415 = 63(2)-415.
+    if (length(core) == 6 && substring(core, 0, 1) == "6")
+    {
+        const six = sixFamilyIndex(substring(core, 0, 2));
+        const thickness = stringToNumber(substring(core, 4, 6));
+        if (six < 0 || thickness < 1 || thickness > 40)
+            return bad;
+        return sixResult(name, "6", six, digitAt(core, 3) / 10, thickness, meanA != undefined ? meanA : 1, 0, 0);
+    }
+    if (meanA != undefined)
+        return { "ok" : false, "error" : "\"a=\" applies to 6-, 6A- and 16-series designations only." };
+    const four = parseFourFive(core, designation);
+    return four.ok ? mergeMaps(four, { "name" : name }) : four;
+}
+
+/** The 4- and 5-digit part of parseNaca (digits only). */
+function parseFourFive(d is string, designation is string) returns map
+{
     const n = length(d);
     if (n != 4 && n != 5)
         return { "ok" : false, "error" : "NACA designation must have 4 or 5 digits (got \"" ~ designation ~ "\")." };
@@ -449,7 +610,7 @@ function parseNaca(designation is string) returns map
         if (camber > 0 && posDigit == 0)
             return { "ok" : false, "error" : "A cambered 4-digit airfoil needs a non-zero camber position digit." };
         return {
-                "ok" : true, "family" : AirfoilFamily.NACA4,
+                "ok" : true, "kind" : "4", "family" : AirfoilFamily.NACA4,
                 "camber" : camber, "camberPos" : (posDigit == 0) ? 40 : posDigit * 10,
                 "designCl" : 0.3, "posIndex" : 3, "reflex" : false, "thickness" : thickness
             };
@@ -467,10 +628,51 @@ function parseNaca(designation is string) returns map
     if (liftDigit > 8)
         return { "ok" : false, "error" : "5-digit design lift digit must be 0 to 8." };
     return {
-            "ok" : true, "family" : AirfoilFamily.NACA5,
+            "ok" : true, "kind" : "5", "family" : AirfoilFamily.NACA5,
             "camber" : 2, "camberPos" : 40,
             "designCl" : 0.15 * liftDigit, "posIndex" : posIndex, "reflex" : reflex == 1, "thickness" : thickness
         };
+}
+
+/** parseNaca result for the 6-, 6A- and 16-series. */
+function sixResult(name is string, kind is string, sixFamily is number, designCl is number, thickness is number,
+    meanA is number, leIndex is number, xMaxThickness is number) returns map
+{
+    return { "ok" : true, "name" : name, "kind" : kind, "family" : AirfoilFamily.NACA6, "camber" : 0, "camberPos" : 40,
+            "designCl" : designCl, "posIndex" : 3, "reflex" : false, "thickness" : thickness, "sixFamily" : sixFamily,
+            "meanA" : meanA, "leIndex" : leIndex, "xMaxThickness" : xMaxThickness };
+}
+
+/** Index into SIX_FAMILIES of "63".."67" or "63A".."65A" at the start of text (a subscript after it is ignored), or -1. */
+function sixFamilyIndex(text is string) returns number
+{
+    if (length(text) < 2)
+        return -1;
+    const isA = length(text) >= 3 && substring(text, 2, 3) == "A";
+    const key = substring(text, 0, 2) ~ (isA ? "A" : "");
+    for (var k = 0; k < size(SIX_FAMILIES); k += 1)
+    {
+        if (SIX_FAMILIES[k] == key)
+            return k;
+    }
+    return -1;
+}
+
+function allDigits(text is string) returns boolean
+{
+    if (length(text) == 0)
+        return false;
+    for (var i = 0; i < length(text); i += 1)
+    {
+        if (indexOf("0123456789", substring(text, i, i + 1)) < 0)
+            return false;
+    }
+    return true;
+}
+
+function digitAt(text is string, index is number) returns number
+{
+    return stringToNumber(substring(text, index, index + 1));
 }
 
 /**
@@ -494,8 +696,8 @@ export function airfoilWingEditLogic(context is Context, id is Id, oldDefinition
             definition.stations[i].label = coords.ok ? (coords.name == "" ? "Coordinates" : coords.name) : "Coordinates (not readable)";
             continue;
         }
-        definition.stations[i].label = "NACA " ~ nacaDigits(st.designation);
         const parsed = parseNaca(st.designation);
+        definition.stations[i].label = parsed.ok ? "NACA " ~ parsed.name : "NACA ?";
         if (parsed.ok)
             definition.stations[i].family = parsed.family;
         if (!st.custom)
@@ -514,6 +716,10 @@ export function airfoilWingEditLogic(context is Context, id is Id, oldDefinition
             definition.stations[i].designCl = naca.designCl;
             definition.stations[i].posIndex = naca.posIndex;
             definition.stations[i].reflex = naca.reflex;
+        }
+        else if (naca.family == AirfoilFamily.NACA6)
+        {
+            definition.stations[i].designCl = naca.designCl;
         }
         else
         {
@@ -578,19 +784,28 @@ function buildSpecs(definition is map) returns map
             throw regenError("Station at " ~ st.position ~ " %: " ~ naca.error, ["stations"]);
         // The designation supplies the defaults; "Customize shape" replaces them with the edited values.
         const five = naca.family == AirfoilFamily.NACA5;
+        const six = naca.family == AirfoilFamily.NACA6;
 
         if (five && st.custom && st.reflex == true && st.posIndex == 1)
             throw regenError("Station at " ~ st.position ~ " %: a reflexed camber line needs a camber position index of 2 to 5.", ["stations"]);
 
-        userSpecs = append(userSpecs, mergeMaps(placement, {
+        const thickness = (st.custom ? st.thickness : naca.thickness) / 100;
+        var spec = mergeMaps(placement, {
                     "family" : naca.family,
-                    "camber" : five ? 0 : (st.custom ? st.camber : naca.camber) / 100,
-                    "camberPos" : five ? 0 : (st.custom ? st.camberPos : naca.camberPos) / 100,
-                    "designCl" : five ? (st.custom ? st.designCl : naca.designCl) : 0,
+                    "camber" : (five || six) ? 0 : (st.custom ? st.camber : naca.camber) / 100,
+                    "camberPos" : (five || six) ? 0 : (st.custom ? st.camberPos : naca.camberPos) / 100,
+                    "designCl" : (five || six) ? (st.custom ? st.designCl : naca.designCl) : 0,
                     "posIndex" : five ? (st.custom ? st.posIndex : naca.posIndex) : 1,
                     "reflex" : five && (st.custom ? st.reflex == true : naca.reflex),
-                    "thickness" : (st.custom ? st.thickness : naca.thickness) / 100
-                }));
+                    "thickness" : thickness,
+                    "meanA" : six ? naca.meanA : 1
+                });
+        // Thickness forms other than the 4-digit one, worked out once per station.
+        if (naca.kind == "4M" || naca.kind == "16")
+            spec.fourModified = fourModifiedCoefficients(thickness, naca.leIndex, naca.xMaxThickness);
+        if (naca.kind == "6" || naca.kind == "6A")
+            spec.sixThickness = sixThickness(naca.sixFamily, thickness);
+        userSpecs = append(userSpecs, spec);
     }
 
     // With a smooth taper the placement of the sections (chord, sweep, dihedral, twist) follows one smooth curve through
@@ -861,71 +1076,41 @@ function airfoilSurfaces(spec is map, n is number, closedTE is boolean) returns 
     if (spec.coords != undefined)
         return coordinateSurfaces(spec.coords, n, closedTE);
 
+    var xs = [];
+    for (var i = 0; i < n; i += 1)
+        xs = append(xs, 0.5 * (1 - cos(PI * radian * (i / (n - 1)))));
+
+    // Half thickness. The 4-digit formula has its own closed and open forms; the 6-series and 4-digit modified
+    // forms are closed (pinched in proportion to x) or opened to at least MIN_OPEN_GAP like pasted coordinates.
+    var yt = [];
+    if (spec.sixThickness != undefined)
+        yt = resampleSide(spec.sixThickness, xs);
+    else
+    {
+        for (var x in xs)
+            yt = append(yt, spec.fourModified != undefined ? fourModifiedThickness(x, spec.fourModified) : thicknessDistribution(x, spec.thickness, closedTE));
+    }
+    if (spec.sixThickness != undefined || spec.fourModified != undefined)
+    {
+        const edge = yt[n - 1];
+        var shift = 0;
+        if (closedTE)
+            shift = -edge;
+        else if (2 * edge < MIN_OPEN_GAP)
+            shift = MIN_OPEN_GAP / 2 - edge;
+        for (var i = 0; i < n; i += 1)
+            yt[i] = yt[i] + shift * xs[i];
+    }
+
     var upper = [];
     var lower = [];
     for (var i = 0; i < n; i += 1)
     {
-        const beta = PI * radian * (i / (n - 1));
-        const x = 0.5 * (1 - cos(beta));
-        const yt = thicknessDistribution(x, spec.thickness, closedTE);
-
-        var yc = 0;
-        var dyc = 0;
-        if (spec.family == AirfoilFamily.NACA4)
-        {
-            const m = spec.camber;
-            const p = spec.camberPos;
-            if (m > 1e-9 && p > 1e-9)
-            {
-                if (x < p)
-                {
-                    yc = m / (p * p) * (2 * p * x - x * x);
-                    dyc = 2 * m / (p * p) * (p - x);
-                }
-                else
-                {
-                    yc = m / ((1 - p) * (1 - p)) * ((1 - 2 * p) + 2 * p * x - x * x);
-                    dyc = 2 * m / ((1 - p) * (1 - p)) * (p - x);
-                }
-            }
-        }
-        else if (spec.reflex)
-        {
-            // Reflexed: the camber line turns back up towards the trailing edge (k21 = k2 / k1).
-            const r = REFLEX_R[spec.posIndex - 1];
-            const k1 = REFLEX_K1[spec.posIndex - 1] * spec.designCl / 0.3;
-            const k21 = REFLEX_K21[spec.posIndex - 1];
-            const tail = k21 * (1 - r) * (1 - r) * (1 - r) + r * r * r;
-            if (x < r)
-            {
-                yc = k1 / 6 * ((x - r) * (x - r) * (x - r) - tail * x + r * r * r);
-                dyc = k1 / 6 * (3 * (x - r) * (x - r) - tail);
-            }
-            else
-            {
-                yc = k1 / 6 * (k21 * (x - r) * (x - r) * (x - r) - tail * x + r * r * r);
-                dyc = k1 / 6 * (3 * k21 * (x - r) * (x - r) - tail);
-            }
-        }
-        else
-        {
-            const r = FIVE_DIGIT_R[spec.posIndex - 1];
-            const k1 = FIVE_DIGIT_K1[spec.posIndex - 1] * spec.designCl / 0.3;
-            if (x < r)
-            {
-                yc = k1 / 6 * (x * x * x - 3 * r * x * x + r * r * (3 - r) * x);
-                dyc = k1 / 6 * (3 * x * x - 6 * r * x + r * r * (3 - r));
-            }
-            else
-            {
-                yc = k1 * r * r * r / 6 * (1 - x);
-                dyc = -k1 * r * r * r / 6;
-            }
-        }
-
-        const theta = atan(dyc);
-        upper = append(upper, [x - yt * sin(theta), yc + yt * cos(theta)]);
-        lower = append(lower, [x + yt * sin(theta), yc - yt * cos(theta)]);
+        const x = xs[i];
+        const camber = meanLine(spec, x);
+        const theta = atan(camber[1]);
+        upper = append(upper, [x - yt[i] * sin(theta), camber[0] + yt[i] * cos(theta)]);
+        lower = append(lower, [x + yt[i] * sin(theta), camber[0] - yt[i] * cos(theta)]);
     }
 
     // The leading edge is shared and, for a closed trailing edge, so is the trailing edge.
@@ -933,6 +1118,157 @@ function airfoilSurfaces(spec is map, n is number, closedTE is boolean) returns 
     if (closedTE)
         lower[n - 1] = upper[n - 1];
     return { "upper" : upper, "lower" : lower };
+}
+
+/** Mean line height and slope [yc, dyc/dx] at x (fraction of chord) for a NACA section spec. */
+function meanLine(spec is map, x is number) returns array
+{
+    if (spec.family == AirfoilFamily.NACA6)
+        return spec.meanA < 0 ? modifiedSixMeanLine(spec.designCl, x) : sixMeanLine(spec.meanA, spec.designCl, x);
+    if (spec.family == AirfoilFamily.NACA4)
+    {
+        const m = spec.camber;
+        const p = spec.camberPos;
+        if (m < 1e-9 || p < 1e-9)
+            return [0, 0];
+        if (x < p)
+            return [m / (p * p) * (2 * p * x - x * x), 2 * m / (p * p) * (p - x)];
+        return [m / ((1 - p) * (1 - p)) * ((1 - 2 * p) + 2 * p * x - x * x), 2 * m / ((1 - p) * (1 - p)) * (p - x)];
+    }
+    if (spec.reflex)
+    {
+        // Reflexed: the camber line turns back up towards the trailing edge (k21 = k2 / k1).
+        const r = REFLEX_R[spec.posIndex - 1];
+        const k1 = REFLEX_K1[spec.posIndex - 1] * spec.designCl / 0.3;
+        const k21 = REFLEX_K21[spec.posIndex - 1];
+        const tail = k21 * (1 - r) * (1 - r) * (1 - r) + r * r * r;
+        if (x < r)
+            return [k1 / 6 * ((x - r) * (x - r) * (x - r) - tail * x + r * r * r), k1 / 6 * (3 * (x - r) * (x - r) - tail)];
+        return [k1 / 6 * (k21 * (x - r) * (x - r) * (x - r) - tail * x + r * r * r), k1 / 6 * (3 * k21 * (x - r) * (x - r) - tail)];
+    }
+    const r = FIVE_DIGIT_R[spec.posIndex - 1];
+    const k1 = FIVE_DIGIT_K1[spec.posIndex - 1] * spec.designCl / 0.3;
+    if (x < r)
+        return [k1 / 6 * (x * x * x - 3 * r * x * x + r * r * (3 - r) * x), k1 / 6 * (3 * x * x - 6 * r * x + r * r * (3 - r))];
+    return [k1 * r * r * r / 6 * (1 - x), -k1 * r * r * r / 6];
+}
+
+/**
+ * NACA 6-series mean line with uniform loading back to x = a (Abbott & von Doenhoff eq. 4-26, 4-27, as in naca456
+ * MeanLine6), scaled to the design lift coefficient. Height and slope are taken as 0 at the ends (log singularities).
+ */
+function sixMeanLine(a is number, cl is number, x is number) returns array
+{
+    const omx = 1 - x;
+    if (x < 1e-7 || omx < 1e-7)
+        return [0, 0];
+    if (1 - a < 1e-7)
+        return [-(omx * log(omx) + x * log(x)) * cl / (4 * PI), (log(omx) - log(x)) * cl / (4 * PI)];
+    const oma = 1 - a;
+    var g = -0.25;
+    var h = -0.5;
+    if (a > 1e-7)
+    {
+        g = -(a * a * (0.5 * log(a) - 0.25) + 0.25) / oma;
+        h = g + (0.5 * oma * oma * log(oma) - 0.25 * oma * oma) / oma;
+    }
+    const amx = a - x;
+    var term1 = 0;
+    var term1p = 0;
+    if (abs(amx) > 1e-7)
+    {
+        term1 = amx * amx * (2 * log(abs(amx)) - 1);
+        term1p = -amx * log(abs(amx));
+    }
+    const term2 = omx * omx * (1 - 2 * log(omx));
+    const term2p = omx * log(omx);
+    const scale = cl / (2 * PI * (a + 1));
+    return [scale * (0.25 * (term1 + term2) / oma - x * log(x) + g - h * x), scale * ((term1p + term2p) / oma - 1 - log(x) - h)];
+}
+
+/**
+ * The modified a=0.8 mean line of the 6A-series (NACA Report 903, as in naca456 MeanLine6M): the a=0.8 line scaled by
+ * 0.97948, replaced aft of x = 0.86 by a straight line to the trailing edge.
+ */
+function modifiedSixMeanLine(cl is number, x is number) returns array
+{
+    const teSlope = -0.24521 * cl;
+    if (x > 0.86)
+        return [teSlope * (x - 1), teSlope];
+    const base = sixMeanLine(0.8, cl, x);
+    return [0.97948 * base[0], 0.97948 * base[1]];
+}
+
+/**
+ * Half-thickness distribution of a NACA 6- or 6A-series family at thickness ratio tc, as [[x, y]...] from the leading
+ * edge (x = 0) to the trailing edge (x = 1): the scaled epsilon and psi functions map a circle onto the profile
+ * (z' = exp(psi + i (phi - eps)), Joukowski zeta = z' + 1 / z'), then the profile is normalised to unit chord.
+ */
+function sixThickness(family is number, tc is number) returns array
+{
+    const scale = polynomial(SIX_SCALE[family], tc);
+    const knot = PI / 20;
+    var re = [];
+    var im = [];
+    for (var i = 0; i < SIX_POINTS; i += 1)
+    {
+        const phi = PI * i / (SIX_POINTS - 1);
+        const k = min(floor(phi / knot), 19);
+        const t = phi / knot - k;
+        const eps = scale * hermite(SIX_EPS[family][k], SIX_EPS[family][k + 1], SIX_DEPS[family][k], SIX_DEPS[family][k + 1], knot, t);
+        const psi = scale * hermite(SIX_PSI[family][k], SIX_PSI[family][k + 1], SIX_DPSI[family][k], SIX_DPSI[family][k + 1], knot, t);
+        const r = exp(psi);
+        const angle = (phi - eps) * radian;
+        re = append(re, (r + 1 / r) * cos(angle));
+        im = append(im, (r - 1 / r) * sin(angle));
+    }
+    const span = re[0] - re[SIX_POINTS - 1];
+    var out = [];
+    for (var i = 0; i < SIX_POINTS; i += 1)
+    {
+        const q = [(re[0] - re[i]) / span, im[i] / span];
+        if (size(out) == 0 || q[0] > out[size(out) - 1][0] + 1e-12)
+            out = append(out, q);
+    }
+    return out;
+}
+
+/**
+ * Coefficients of the NACA 4-digit modified thickness distribution (Abbott & von Doenhoff 6.4, as in naca456
+ * Thickness4M) for thickness ratio tc, leading-edge radius index leIndex and max thickness at xMax.
+ */
+function fourModifiedCoefficients(tc is number, leIndex is number, xMax is number) returns map
+{
+    const m = xMax;
+    const d1 = polynomial(FOUR_MOD_D1, m);
+    const rle = 1.1019 / 36 * (tc * leIndex) * (tc * leIndex);
+    const a0 = (0.2 / tc) * sqrt(2 * rle);
+    const a3 = 0.1 / (m * m * m) + (d1 * (1 - m) - 0.294) / (m * (1 - m) * (1 - m)) - 0.375 * a0 / (m * m * sqrt(m));
+    const a2 = -0.1 / (m * m) + 0.5 * a0 / (m * sqrt(m)) - 2 * a3 * m;
+    const a1 = -0.5 * a0 / sqrt(m) - 2 * a2 * m - 3 * a3 * m * m;
+    const d3 = (3 * d1 - 0.588 / (1 - m)) / (3 * (1 - m) * (1 - m));
+    const d2 = -1.5 * (1 - m) * d3 - 0.5 * d1 / (1 - m);
+    return { "tc" : tc, "xMax" : m, "a" : [a0, a1, a2, a3], "d" : [0.002, d1, d2, d3] };
+}
+
+/** NACA 4-digit modified half thickness at x for coefficients from fourModifiedCoefficients. */
+function fourModifiedThickness(x is number, c is map) returns number
+{
+    if (x <= 0)
+        return 0;
+    if (x < c.xMax)
+        return 5 * c.tc * (c.a[0] * sqrt(x) + x * (c.a[1] + x * (c.a[2] + x * c.a[3])));
+    const u = 1 - x;
+    return 5 * c.tc * (c.d[0] + u * (c.d[1] + u * (c.d[2] + u * c.d[3])));
+}
+
+/** c[0] + c[1] x + c[2] x^2 + ... */
+function polynomial(c is array, x is number) returns number
+{
+    var f = 0;
+    for (var k = size(c) - 1; k >= 0; k -= 1)
+        f = f * x + c[k];
+    return f;
 }
 
 /**
