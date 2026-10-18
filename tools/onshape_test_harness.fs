@@ -7,11 +7,13 @@ const NACA2412_DAT = "NACA 2412 1.0000 0.0013 0.9500 0.0114 0.9000 0.0208 0.8000
 const GOE387_DAT = "GOE 387 AIRFOIL 17. 17.  0.0000000 0.0000000 0.0125000 0.0308800 0.0250000 0.0452600 0.0500000 0.0645200 0.0750000 0.0787900 0.1000000 0.0905500 0.1500000 0.1065800 0.2000000 0.1181000 0.3000000 0.1276500 0.4000000 0.1262000 0.5000000 0.1167500 0.6000000 0.0998000 0.7000000 0.0783500 0.8000000 0.0539000 0.9000000 0.0279500 0.9500000 0.0144700 1.0000000 0.0000000  0.0000000 0.0000000 0.0125000 -.0186200 0.0250000 -.0217400 0.0500000 -.0249700 0.0750000 -.0272100 0.1000000 -.0279500 0.1500000 -.0274300 0.2000000 -.0259000 0.3000000 -.0208500 0.4000000 -.0158000 0.5000000 -.0122500 0.6000000 -.0087000 0.7000000 -.0061500 0.8000000 -.0046000 0.9000000 -.0030500 0.9500000 -.0025200 1.0000000 0.0000000";
 
 const SC2110_DAT = "SIKORSKY SC2110 AIRFOIL 41. 47. 0.0 0.0000000 0.0041792 0.0122162 0.0065891 0.0158434 0.0114686 0.0216807 0.0238180 0.0321074 0.0486772 0.0449249 0.0736368 0.0526535 0.0986465 0.0576708 0.1487162 0.0633128 0.1988561 0.0658160 0.2490259 0.0667050 0.2992060 0.0667340 0.3375290 0.0664244 0.3774060 0.0658768 0.4172812 0.0650583 0.4372171 0.0645115 0.4571522 0.0638477 0.4770852 0.0630549 0.4970183 0.0621352 0.5368804 0.0599266 0.5568104 0.0586409 0.5767395 0.0572281 0.5966676 0.0556763 0.6365188 0.0521118 0.6564451 0.0500760 0.6763662 0.0478612 0.6962884 0.0454614 0.7361247 0.0401158 0.7560418 0.0371861 0.7759559 0.0341053 0.7958711 0.0308945 0.8356976 0.0241659 0.8556108 0.0206912 0.8755220 0.0171784 0.8954352 0.0136696 0.9352626 0.0070730 0.9551798 0.0043813 0.9751059 0.0025825 0.9850739 0.0022181 0.9950449 0.0023647 1.0000000 0.0026760 0.0 0.0000000 0.0022484 -.0061159 0.0048475 -.0081437 0.0104667 -.0104373 0.0226118 -.0130796 0.0347099 -.0149399 0.0407510 -.0157545 0.0528190 -.0171948 0.0789273 -.0196542 0.0989823 -.0211369 0.1290354 -.0229861 0.1573386 -.0245304 0.1722866 -.0253165 0.2021857 -.0268727 0.2320818 -.0283878 0.2470309 -.0291099 0.2769289 -.0304381 0.3068300 -.0315753 0.3367340 -.0324964 0.3766071 -.0333630 0.4164851 -.0337986 0.4364251 -.0338504 0.4563661 -.0337911 0.4763082 -.0336169 0.4962491 -.0333226 0.5361381 -.0323672 0.5560830 -.0317080 0.5760300 -.0309348 0.5959779 -.0300546 0.6358737 -.0279932 0.6558247 -.0268179 0.6757756 -.0255517 0.6957266 -.0241985 0.7356305 -.0212521 0.7555832 -.0196779 0.7755351 -.0180517 0.7954900 -.0163834 0.8353968 -.0129550 0.8553527 -.0112028 0.8753066 -.0094236 0.8952615 -.0076154 0.9351713 -.0040499 0.9551232 -.0024657 0.9750731 -.0012615 0.9850470 -.0009119 0.9950181 -.0008203 1.0000000 -.0008990";
+// UIUC naca0010.dat (symmetric: camber cannot be scaled).
+const NACA0010_DAT = "NACA 0010 1.0000 0.00105 0.9500 0.00672 0.9000 0.01207 0.8000 0.02187 0.7000 0.03053 0.6000 0.03803 0.5000 0.04412 0.4000 0.04837 0.3000 0.05002 0.2500 0.04952 0.2000 0.04782 0.1500 0.04455 0.1000 0.03902 0.0750 0.03500 0.0500 0.02962 0.0250 0.02178 0.0125 0.01578 0.0000 0.00000 0.0125 -0.01578 0.0250 -0.02178 0.0500 -0.02962 0.0750 -0.03500 0.1000 -0.03902 0.1500 -0.04455 0.2000 -0.04782 0.2500 -0.04952 0.3000 -0.05002 0.4000 -0.04837 0.5000 -0.04412 0.6000 -0.03803 0.7000 -0.03053 0.8000 -0.02187 0.9000 -0.01207 0.9500 -0.00672 1.0000 -0.00105";
 
 function stn(position is number, designation is string, chord is ValueWithUnits) returns map
 {
     return { "position" : position, "source" : AirfoilSource.NACA, "label" : "NACA " ~ designation, "coordinates" : "",
-            "scaleThickness" : false, "coordThickness" : 12, "designation" : designation, "custom" : false, "family" : AirfoilFamily.NACA4, "reflex" : false,
+            "scaleThickness" : false, "coordThickness" : 12, "scaleCamber" : false, "coordCamber" : 2, "designation" : designation, "custom" : false, "family" : AirfoilFamily.NACA4, "reflex" : false,
             "camber" : 2, "camberPos" : 40, "designCl" : 0.3, "posIndex" : 3, "thickness" : 12, "chord" : chord,
             "origin" : 25, "aoa" : 0 * degree, "sweep" : 0 * millimeter, "vertical" : 0 * millimeter };
 }
@@ -262,7 +264,7 @@ export const wingTest = defineFeature(function(context is Context, id is Id, def
                     out = out ~ "ERR " ~ coords.error ~ " | ";
                     continue;
                 }
-                const surfaces = coordinateSurfaces(coords, 40, true, 1);
+                const surfaces = coordinateSurfaces(coords, 40, true, 1, 1);
                 out = out ~ coords.name ~ " " ~ size(coords.upper) ~ "/" ~ size(coords.lower) ~ (coords.closeRamp ? " ramp" : " pinch");
                 for (var i in [8, 20, 36])
                     out = out ~ " " ~ roundToPrecision(surfaces.upper[i][1], 5) ~ "/" ~ roundToPrecision(surfaces.lower[i][1], 5);
@@ -297,7 +299,7 @@ export const wingTest = defineFeature(function(context is Context, id is Id, def
             for (var c in cases)
             {
                 const coords = parseCoordinates(c[0]);
-                const surfaces = coordinateSurfaces(coords, 40, true, c[1] / 100 / coords.thickness);
+                const surfaces = coordinateSurfaces(coords, 40, true, c[1] / 100 / coords.thickness, 1);
                 out = out ~ "t" ~ roundToPrecision(coords.thickness * 100, 3);
                 for (var i in [20, 36])
                     out = out ~ " " ~ roundToPrecision(surfaces.upper[i][1], 5) ~ "/" ~ roundToPrecision(surfaces.lower[i][1], 5);
@@ -318,6 +320,56 @@ export const wingTest = defineFeature(function(context is Context, id is Id, def
             out = out ~ " " ~ report(context, id + "b", "N2415", [stn(0, "2415", 200 * millimeter), stn(100, "2415", 120 * millimeter)], {});
             // Unscaled root, scaled tip: 12 -> 15 %.
             out = out ~ " " ~ report(context, id + "c", "MIX", [datRoot, datTip], {});
+            throw regenError(out);
+        }
+        if (SUITE == "cscale")
+        {
+            // Camber scaling of pasted coordinates: file camber (%) and scaled section y at cosine indices 20, 36 of 40
+            // (closed TE) against tools/dat_reference.py --scale (naca2412 camber -> 4, goe387 thickness 10 camber 2,
+            // sc2110 thickness 14 camber 0.5); the editing logic with both boxes ticked; volumes: the naca2412 file
+            // with camber 4 and 0 must equal the unscaled one (camber does not change section area); the symmetric
+            // naca0010 file with camber 2 must fail, with camber 0 build.
+            var out = "";
+            const cases = [[NACA2412_DAT, 0, 4], [GOE387_DAT, 10, 2], [SC2110_DAT, 14, 0.5]];
+            for (var c in cases)
+            {
+                const coords = parseCoordinates(c[0]);
+                const ts = c[1] == 0 ? 1 : c[1] / 100 / coords.thickness;
+                const surfaces = coordinateSurfaces(coords, 40, true, ts, c[2] / 100 / abs(coords.camber));
+                out = out ~ "c" ~ roundToPrecision(coords.camber * 100, 3);
+                for (var i in [20, 36])
+                    out = out ~ " " ~ roundToPrecision(surfaces.upper[i][1], 5) ~ "/" ~ roundToPrecision(surfaces.lower[i][1], 5);
+                out = out ~ " | ";
+            }
+            var datRoot = stn(0, "2412", 200 * millimeter);
+            datRoot.source = AirfoilSource.COORDINATES;
+            datRoot.coordinates = NACA2412_DAT;
+            var ticked = datRoot;
+            ticked.scaleThickness = true;
+            ticked.scaleCamber = true;
+            const edited = airfoilWingEditLogic(context, id, { "stations" : [datRoot] }, { "stations" : [ticked] }, false);
+            out = out ~ edited.stations[0].coordCamber ~ " '" ~ edited.stations[0].label ~ "' | ";
+            var datTip = datRoot;
+            datTip.position = 100;
+            datTip.chord = 120 * millimeter;
+            out = out ~ report(context, id + "a", "C1", [datRoot, datTip], {});
+            for (var target in [4, 0])
+            {
+                var r = datRoot;
+                r.scaleCamber = true;
+                r.coordCamber = target;
+                var tp = r;
+                tp.position = 100;
+                tp.chord = 120 * millimeter;
+                out = out ~ " " ~ report(context, id + ("c" ~ target), "C" ~ target, [r, tp], {});
+            }
+            var sym = datRoot;
+            sym.coordinates = NACA0010_DAT;
+            sym.scaleCamber = true;
+            var symTip = stn(100, "0012", 120 * millimeter);
+            out = out ~ " | " ~ report(context, id + "s2", "S2", [sym, symTip], {});
+            sym.coordCamber = 0;
+            out = out ~ " " ~ report(context, id + "s0", "S0", [sym, symTip], {});
             throw regenError(out);
         }
         if (SUITE == "reflex")

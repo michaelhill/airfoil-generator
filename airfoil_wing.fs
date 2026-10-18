@@ -86,6 +86,8 @@ const MIN_OPEN_GAP = 0.0025;
 // fallback closing (thickness tapered to zero) starts.
 const CLOSE_CHECK_POINTS = 400;
 const CLOSE_RAMP_START = 0.9;
+// Pasted coordinates: below this max camber (fraction of chord) the airfoil counts as symmetric and cannot be scaled.
+const MIN_SCALABLE_CAMBER = 1e-4;
 
 // Smallest scale a cap section is allowed to reach (a loft cannot end on a zero-size section).
 const MIN_CAP_SCALE = 0.03;
@@ -206,6 +208,15 @@ export const airfoilWing = defineFeature(function(context is Context, id is Id, 
                 {
                     annotation { "Name" : "Thickness (% chord, camber line kept)" }
                     isReal(station.coordThickness, THICKNESS_BOUNDS);
+                }
+
+                annotation { "Name" : "Scale camber (start from the file's camber)" }
+                station.scaleCamber is boolean;
+
+                if (station.scaleCamber)
+                {
+                    annotation { "Name" : "Max camber (% chord, position and thickness kept)" }
+                    isReal(station.coordCamber, CAMBER_BOUNDS);
                 }
             }
             else
@@ -491,7 +502,7 @@ function wingReadout(stats is map, volume) returns string
 function seedStation(position is number, designation is string, chord is ValueWithUnits) returns map
 {
     return { "position" : position, "source" : AirfoilSource.NACA, "label" : "NACA " ~ designation, "coordinates" : "",
-            "scaleThickness" : false, "coordThickness" : 12, "designation" : designation, "family" : AirfoilFamily.NACA4, "custom" : false, "chord" : chord, "origin" : 25, "aoa" : 0 * degree, "sweep" : 0 * millimeter, "vertical" : 0 * millimeter };
+            "scaleThickness" : false, "coordThickness" : 12, "scaleCamber" : false, "coordCamber" : 2, "designation" : designation, "family" : AirfoilFamily.NACA4, "custom" : false, "chord" : chord, "origin" : 25, "aoa" : 0 * degree, "sweep" : 0 * millimeter, "vertical" : 0 * millimeter };
 }
 
 /**
@@ -703,15 +714,28 @@ export function airfoilWingEditLogic(context is Context, id is Id, oldDefinition
         {
             const coords = parseCoordinates(st.coordinates == undefined ? "" : st.coordinates);
             definition.stations[i].label = coords.ok ? (coords.name == "" ? "Coordinates" : coords.name) : "Coordinates (not readable)";
-            if (!coords.ok || st.scaleThickness != true)
+            if (!coords.ok)
                 continue;
-            // Fill in the file's own thickness when scaling is switched on or different coordinates are pasted.
+            // Fill in the file's own thickness / camber when scaling is switched on or different coordinates are pasted.
             var oldSt = undefined;
             if (oldDefinition.stations != undefined && i < size(oldDefinition.stations))
                 oldSt = oldDefinition.stations[i];
-            if (oldSt == undefined || oldSt.scaleThickness != true || oldSt.coordinates != st.coordinates)
-                definition.stations[i].coordThickness = roundToPrecision(coords.thickness * 100, 2);
-            definition.stations[i].label = definition.stations[i].label ~ " (" ~ roundToPrecision(definition.stations[i].coordThickness, 2) ~ " % thick)";
+            const changed = oldSt == undefined || oldSt.coordinates != st.coordinates;
+            var notes = "";
+            if (st.scaleThickness == true)
+            {
+                if (changed || oldSt.scaleThickness != true)
+                    definition.stations[i].coordThickness = roundToPrecision(coords.thickness * 100, 2);
+                notes = "" ~ roundToPrecision(definition.stations[i].coordThickness, 2) ~ " % thick";
+            }
+            if (st.scaleCamber == true)
+            {
+                if (changed || oldSt.scaleCamber != true)
+                    definition.stations[i].coordCamber = roundToPrecision(abs(coords.camber) * 100, 2);
+                notes = notes ~ (notes == "" ? "" : ", ") ~ roundToPrecision(definition.stations[i].coordCamber, 2) ~ " % camber";
+            }
+            if (notes != "")
+                definition.stations[i].label = definition.stations[i].label ~ " (" ~ notes ~ ")";
             continue;
         }
         const parsed = parseNaca(st.designation);
@@ -796,8 +820,15 @@ function buildSpecs(definition is map) returns map
             var thicknessScale = 1;
             if (st.scaleThickness == true)
                 thicknessScale = st.coordThickness / 100 / coords.thickness;
+            var camberScale = 1;
+            if (st.scaleCamber == true)
+            {
+                if (abs(coords.camber) < MIN_SCALABLE_CAMBER && st.coordCamber > 0)
+                    throw regenError("Station at " ~ st.position ~ " %: the pasted airfoil has no camber to scale (it is symmetric).", ["stations"]);
+                camberScale = abs(coords.camber) < MIN_SCALABLE_CAMBER ? 0 : st.coordCamber / 100 / abs(coords.camber);
+            }
             userSpecs = append(userSpecs, mergeMaps(placement, { "family" : AirfoilFamily.NACA4, "coords" : coords,
-                            "thicknessScale" : thicknessScale }));
+                            "thicknessScale" : thicknessScale, "camberScale" : camberScale }));
             continue;
         }
 
@@ -1096,7 +1127,8 @@ function airfoilSurfaces(spec is map, n is number, closedTE is boolean) returns 
         return { "upper" : blendedUpper, "lower" : blendedLower };
     }
     if (spec.coords != undefined)
-        return coordinateSurfaces(spec.coords, n, closedTE, spec.thicknessScale == undefined ? 1 : spec.thicknessScale);
+        return coordinateSurfaces(spec.coords, n, closedTE, spec.thicknessScale == undefined ? 1 : spec.thicknessScale,
+                spec.camberScale == undefined ? 1 : spec.camberScale);
 
     var xs = [];
     for (var i = 0; i < n; i += 1)
@@ -1299,9 +1331,11 @@ function polynomial(c is array, x is number) returns number
  * name) are skipped. Two whole-number counts matching the number of values after them start a Lednicer file (upper
  * then lower surface, each leading edge to trailing edge); otherwise it is a Selig file (one loop, trailing edge over
  * the upper surface to the leading edge and back along the lower surface).
- * Returns { ok, error, name, upper, lower, closeRamp, thickness }: each surface leading edge to trailing edge as [x, y]
- * with the leading edge (smallest x) at the origin, unit chord, and x strictly increasing; closeRamp as in
- * needsCloseRamp(); thickness the largest distance between the surfaces at the same x (fraction of chord).
+ * Returns { ok, error, name, upper, lower, closeRamp, thickness, camber }: each surface leading edge to trailing edge as
+ * [x, y] with the leading edge (smallest x) at the origin, unit chord, and x strictly increasing; closeRamp as in
+ * needsCloseRamp(); thickness the largest distance between the surfaces at the same x; camber the height of the camber
+ * line (mid-point of the surfaces at each x) above the chord line (leading edge to trailing-edge mid-point) where it
+ * is largest in size, with its sign (all fractions of chord).
  */
 function parseCoordinates(text is string) returns map
 {
@@ -1423,13 +1457,21 @@ function parseCoordinates(text is string) returns map
         xs = append(xs, 0.5 * (1 - cos(PI * radian * (m / (CLOSE_CHECK_POINTS - 1)))));
     const yUpper = resampleSide(upper, xs);
     const yLower = resampleSide(lower, xs);
+    const last = CLOSE_CHECK_POINTS - 1;
+    const teMid = (yUpper[last] + yLower[last]) / 2;
     var thickness = 0;
+    var camber = 0;
     for (var m = 0; m < CLOSE_CHECK_POINTS; m += 1)
+    {
         thickness = max(thickness, yUpper[m] - yLower[m]);
+        const height = (yUpper[m] + yLower[m]) / 2 - teMid * xs[m];
+        if (abs(height) > abs(camber))
+            camber = height;
+    }
     if (thickness < 1e-6)
         return { "ok" : false, "error" : "The pasted coordinates have no thickness." };
     return { "ok" : true, "name" : substring(text, a, b), "upper" : upper, "lower" : lower,
-            "closeRamp" : needsCloseRamp(xs, yUpper, yLower), "thickness" : thickness };
+            "closeRamp" : needsCloseRamp(xs, yUpper, yLower), "thickness" : thickness, "camber" : camber };
 }
 
 /**
@@ -1475,19 +1517,22 @@ function meanY(side is array) returns number
  * point), with a shape-preserving cubic through the points of each surface. A closed trailing edge pinches the two
  * surfaces together in proportion to x, or, where that would cross (closeRamp), tapers the thickness to zero over the
  * last part of the chord about the mean line; an open one is widened in proportion to x to at least MIN_OPEN_GAP.
- * thicknessScale multiplies the distance between the surfaces about their mid-point at each x (the camber line), before
- * the trailing edge is closed or opened.
+ * thicknessScale multiplies the distance between the surfaces about their mid-point at each x (the camber line), and
+ * camberScale the height of that mid-point above the chord line (leading edge to trailing-edge mid-point), before the
+ * trailing edge is closed or opened.
  */
-function coordinateSurfaces(coords is map, n is number, closedTE is boolean, thicknessScale is number) returns map
+function coordinateSurfaces(coords is map, n is number, closedTE is boolean, thicknessScale is number, camberScale is number) returns map
 {
     var xs = [];
     for (var i = 0; i < n; i += 1)
         xs = append(xs, 0.5 * (1 - cos(PI * radian * (i / (n - 1)))));
     var yUpper = resampleSide(coords.upper, xs);
     var yLower = resampleSide(coords.lower, xs);
+    const teMid = (yUpper[n - 1] + yLower[n - 1]) / 2;
     for (var i = 0; i < n; i += 1)
     {
-        const mid = (yUpper[i] + yLower[i]) / 2;
+        const chordLine = teMid * xs[i];
+        const mid = chordLine + ((yUpper[i] + yLower[i]) / 2 - chordLine) * camberScale;
         const half = (yUpper[i] - yLower[i]) * thicknessScale / 2;
         yUpper[i] = mid + half;
         yLower[i] = mid - half;
