@@ -198,6 +198,15 @@ export const airfoilWing = defineFeature(function(context is Context, id is Id, 
             {
                 annotation { "Name" : "Coordinates (paste a whole Selig or Lednicer .dat file)" }
                 station.coordinates is string;
+
+                annotation { "Name" : "Scale thickness (start from the file's thickness)" }
+                station.scaleThickness is boolean;
+
+                if (station.scaleThickness)
+                {
+                    annotation { "Name" : "Thickness (% chord, camber line kept)" }
+                    isReal(station.coordThickness, THICKNESS_BOUNDS);
+                }
             }
             else
             {
@@ -482,7 +491,7 @@ function wingReadout(stats is map, volume) returns string
 function seedStation(position is number, designation is string, chord is ValueWithUnits) returns map
 {
     return { "position" : position, "source" : AirfoilSource.NACA, "label" : "NACA " ~ designation, "coordinates" : "",
-            "designation" : designation, "family" : AirfoilFamily.NACA4, "custom" : false, "chord" : chord, "origin" : 25, "aoa" : 0 * degree, "sweep" : 0 * millimeter, "vertical" : 0 * millimeter };
+            "scaleThickness" : false, "coordThickness" : 12, "designation" : designation, "family" : AirfoilFamily.NACA4, "custom" : false, "chord" : chord, "origin" : 25, "aoa" : 0 * degree, "sweep" : 0 * millimeter, "vertical" : 0 * millimeter };
 }
 
 /**
@@ -694,6 +703,15 @@ export function airfoilWingEditLogic(context is Context, id is Id, oldDefinition
         {
             const coords = parseCoordinates(st.coordinates == undefined ? "" : st.coordinates);
             definition.stations[i].label = coords.ok ? (coords.name == "" ? "Coordinates" : coords.name) : "Coordinates (not readable)";
+            if (!coords.ok || st.scaleThickness != true)
+                continue;
+            // Fill in the file's own thickness when scaling is switched on or different coordinates are pasted.
+            var oldSt = undefined;
+            if (oldDefinition.stations != undefined && i < size(oldDefinition.stations))
+                oldSt = oldDefinition.stations[i];
+            if (oldSt == undefined || oldSt.scaleThickness != true || oldSt.coordinates != st.coordinates)
+                definition.stations[i].coordThickness = roundToPrecision(coords.thickness * 100, 2);
+            definition.stations[i].label = definition.stations[i].label ~ " (" ~ roundToPrecision(definition.stations[i].coordThickness, 2) ~ " % thick)";
             continue;
         }
         const parsed = parseNaca(st.designation);
@@ -775,7 +793,11 @@ function buildSpecs(definition is map) returns map
             const coords = parseCoordinates(st.coordinates == undefined ? "" : st.coordinates);
             if (!coords.ok)
                 throw regenError("Station at " ~ st.position ~ " %: " ~ coords.error, ["stations"]);
-            userSpecs = append(userSpecs, mergeMaps(placement, { "family" : AirfoilFamily.NACA4, "coords" : coords }));
+            var thicknessScale = 1;
+            if (st.scaleThickness == true)
+                thicknessScale = st.coordThickness / 100 / coords.thickness;
+            userSpecs = append(userSpecs, mergeMaps(placement, { "family" : AirfoilFamily.NACA4, "coords" : coords,
+                            "thicknessScale" : thicknessScale }));
             continue;
         }
 
@@ -1074,7 +1096,7 @@ function airfoilSurfaces(spec is map, n is number, closedTE is boolean) returns 
         return { "upper" : blendedUpper, "lower" : blendedLower };
     }
     if (spec.coords != undefined)
-        return coordinateSurfaces(spec.coords, n, closedTE);
+        return coordinateSurfaces(spec.coords, n, closedTE, spec.thicknessScale == undefined ? 1 : spec.thicknessScale);
 
     var xs = [];
     for (var i = 0; i < n; i += 1)
@@ -1277,8 +1299,9 @@ function polynomial(c is array, x is number) returns number
  * name) are skipped. Two whole-number counts matching the number of values after them start a Lednicer file (upper
  * then lower surface, each leading edge to trailing edge); otherwise it is a Selig file (one loop, trailing edge over
  * the upper surface to the leading edge and back along the lower surface).
- * Returns { ok, error, name, upper, lower, closeRamp }: each surface leading edge to trailing edge as [x, y] with the
- * leading edge (smallest x) at the origin, unit chord, and x strictly increasing; closeRamp as in needsCloseRamp().
+ * Returns { ok, error, name, upper, lower, closeRamp, thickness }: each surface leading edge to trailing edge as [x, y]
+ * with the leading edge (smallest x) at the origin, unit chord, and x strictly increasing; closeRamp as in
+ * needsCloseRamp(); thickness the largest distance between the surfaces at the same x (fraction of chord).
  */
 function parseCoordinates(text is string) returns map
 {
@@ -1395,22 +1418,28 @@ function parseCoordinates(text is string) returns map
         a += 1;
     while (b > a && indexOf(" \t\r\n", substring(text, b - 1, b)) >= 0)
         b -= 1;
+    var xs = [];
+    for (var m = 0; m < CLOSE_CHECK_POINTS; m += 1)
+        xs = append(xs, 0.5 * (1 - cos(PI * radian * (m / (CLOSE_CHECK_POINTS - 1)))));
+    const yUpper = resampleSide(upper, xs);
+    const yLower = resampleSide(lower, xs);
+    var thickness = 0;
+    for (var m = 0; m < CLOSE_CHECK_POINTS; m += 1)
+        thickness = max(thickness, yUpper[m] - yLower[m]);
+    if (thickness < 1e-6)
+        return { "ok" : false, "error" : "The pasted coordinates have no thickness." };
     return { "ok" : true, "name" : substring(text, a, b), "upper" : upper, "lower" : lower,
-            "closeRamp" : needsCloseRamp(upper, lower) };
+            "closeRamp" : needsCloseRamp(xs, yUpper, yLower), "thickness" : thickness };
 }
 
 /**
- * True when closing the trailing edge with a linear pinch (gap * x) would make the section cross itself, checked on a
- * fine grid: a blunt edge whose surfaces spread apart towards the end (e.g. sc2110).
+ * True when closing the trailing edge with a linear pinch (gap * x) would make the section cross itself, checked on the
+ * fine grid xs (surfaces resampled there): a blunt edge whose surfaces spread apart towards the end (e.g. sc2110).
+ * Scaling the thickness does not change the answer (both sides of the test scale alike).
  */
-function needsCloseRamp(upper is array, lower is array) returns boolean
+function needsCloseRamp(xs is array, yUpper is array, yLower is array) returns boolean
 {
-    var xs = [];
-    for (var i = 0; i < CLOSE_CHECK_POINTS; i += 1)
-        xs = append(xs, 0.5 * (1 - cos(PI * radian * (i / (CLOSE_CHECK_POINTS - 1)))));
-    const yUpper = resampleSide(upper, xs);
-    const yLower = resampleSide(lower, xs);
-    const last = CLOSE_CHECK_POINTS - 1;
+    const last = size(xs) - 1;
     const gap = yUpper[last] - yLower[last];
     for (var i = 1; i < last; i += 1)
     {
@@ -1446,14 +1475,23 @@ function meanY(side is array) returns number
  * point), with a shape-preserving cubic through the points of each surface. A closed trailing edge pinches the two
  * surfaces together in proportion to x, or, where that would cross (closeRamp), tapers the thickness to zero over the
  * last part of the chord about the mean line; an open one is widened in proportion to x to at least MIN_OPEN_GAP.
+ * thicknessScale multiplies the distance between the surfaces about their mid-point at each x (the camber line), before
+ * the trailing edge is closed or opened.
  */
-function coordinateSurfaces(coords is map, n is number, closedTE is boolean) returns map
+function coordinateSurfaces(coords is map, n is number, closedTE is boolean, thicknessScale is number) returns map
 {
     var xs = [];
     for (var i = 0; i < n; i += 1)
         xs = append(xs, 0.5 * (1 - cos(PI * radian * (i / (n - 1)))));
-    const yUpper = resampleSide(coords.upper, xs);
-    const yLower = resampleSide(coords.lower, xs);
+    var yUpper = resampleSide(coords.upper, xs);
+    var yLower = resampleSide(coords.lower, xs);
+    for (var i = 0; i < n; i += 1)
+    {
+        const mid = (yUpper[i] + yLower[i]) / 2;
+        const half = (yUpper[i] - yLower[i]) * thicknessScale / 2;
+        yUpper[i] = mid + half;
+        yLower[i] = mid - half;
+    }
     const gap = yUpper[n - 1] - yLower[n - 1];
     var shift = 0;
     if (closedTE)

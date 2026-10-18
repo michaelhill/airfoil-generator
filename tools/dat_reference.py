@@ -5,9 +5,14 @@ and the numbers run together. Coordinates are the numbers with a decimal point; 
 "12.5%" in the name) are skipped, except the two point counts that start a Lednicer file.
 
 Usage: python3 -I tools/dat_reference.py <dir of .dat files>
-Prints, per file: format, points per side, and the largest distance (fraction of chord) from the original points
-to the resampled section (fine and 40-point spacing, polyline through the points) - the resampling error, without
-the trailing-edge closing / opening.
+Prints, per file: format, points per side, max thickness, and the largest distance (fraction of chord) from the
+original points to the resampled section (fine and 40-point spacing, polyline through the points) - the resampling
+error, without the trailing-edge closing / opening.
+
+       python3 -I tools/dat_reference.py --scale <file.dat> <thickness %> <reference.dat>
+Scales the first file's thickness about its camber line (as the "Scale thickness" option) and prints the largest
+difference in upper / lower y from the reference file (both resampled, trailing edges as in the data), e.g.
+naca0010 -> 15 vs naca0015, naca4412 -> 15 vs naca4415.
 """
 import glob
 import os
@@ -84,6 +89,12 @@ def parse(text):
     return name.strip(), fmt, increasing(up), increasing(lo)
 
 
+def max_thickness(up, lo):
+    """Largest distance between the surfaces at the same x, on the fine grid (fraction of chord)."""
+    xs = 0.5 * (1 - np.cos(np.linspace(0, np.pi, CHECK_POINTS)))
+    return float(np.max(resample(up, xs) - resample(lo, xs)))
+
+
 def needs_ramp(up, lo):
     """True when closing the trailing edge with a linear pinch (gap * x) would make the section cross itself, checked
     on a fine grid: a blunt edge whose surfaces spread apart towards the end (sc2110)."""
@@ -135,10 +146,13 @@ def resample(side, xs):
     return np.array(out)
 
 
-def surfaces(up, lo, n, closed):
-    """Resampled section; closed=None leaves the trailing edge as in the data."""
+def surfaces(up, lo, n, closed, scale=1.0):
+    """Resampled section; closed=None leaves the trailing edge as in the data. scale multiplies the thickness about
+    the mid-point of the two surfaces at each x (the camber line), before the trailing edge is closed or opened."""
     xs = 0.5 * (1 - np.cos(np.linspace(0, np.pi, n)))
     yu, yl = resample(up, xs), resample(lo, xs)
+    mid, half = (yu + yl) / 2, (yu - yl) * scale / 2
+    yu, yl = mid + half, mid - half
     gap = yu[-1] - yl[-1]
     if closed is None:
         return xs, yu, yl
@@ -158,7 +172,24 @@ def dist(P, q):
     return np.min(np.linalg.norm(a + tt[:, None] * ab - q, axis=1))
 
 
+def scale_check(path, target_pct, reference):
+    name, _, up, lo = parse(open(path).read().replace("\n", " "))
+    ref_name, _, rup, rlo = parse(open(reference).read().replace("\n", " "))
+    t0 = max_thickness(up, lo)
+    xs, yu, yl = surfaces(up, lo, 2000, closed=None, scale=target_pct / 100 / t0)
+    _, ru, rl = surfaces(rup, rlo, 2000, closed=None)
+    scaled = max_thickness(np.column_stack([xs, yu]), np.column_stack([xs, yl]))
+    print(f"'{name}' t/c {100 * t0:.3f} % -> {100 * scaled:.3f} %  vs '{ref_name}' t/c {100 * max_thickness(rup, rlo):.3f} %: "
+          f"max |dy| upper {np.max(np.abs(yu - ru)):.5f}  lower {np.max(np.abs(yl - rl)):.5f}")
+    # FeatureScript comparison values: 40-point closed section at cosine indices 8, 20, 36.
+    _, cu, cl = surfaces(up, lo, 40, closed=True, scale=target_pct / 100 / t0)
+    print("  40-pt closed y at 8, 20, 36: " + " ".join(f"{cu[i]:.5f}/{cl[i]:.5f}" for i in (8, 20, 36)))
+
+
 if __name__ == "__main__":
+    if sys.argv[1] == "--scale":
+        scale_check(sys.argv[2], float(sys.argv[3]), sys.argv[4])
+        sys.exit()
     for f in sorted(glob.glob(os.path.join(sys.argv[1], "*.dat"))):
         text = open(f).read().replace("\n", " ")       # as pasted into a one-line text field
         name, fmt, up, lo = parse(text)
@@ -169,6 +200,6 @@ if __name__ == "__main__":
             # Only the shape: no trailing-edge adjustment (closed=None).
             worst[n] = max(dist(P, q) for q in np.vstack([up, lo]))
         xs, yu, yl = surfaces(up, lo, 200, closed=True)
-        print(f"{os.path.basename(f):14s} {fmt:8s} '{name[:22]}' up {len(up):3d} lo {len(lo):3d}  "
+        print(f"{os.path.basename(f):14s} {fmt:8s} '{name[:22]}' up {len(up):3d} lo {len(lo):3d}  t/c {100 * max_thickness(up, lo):6.3f} %  "
               f"max dist/c fine {worst[2000]:.5f}  40 pts (chords) {worst[40]:.5f}  "
               f"{'ramp' if needs_ramp(up, lo) else 'pinch'}  min closed thickness {np.min((yu - yl)[1:-1]):+.5f}")

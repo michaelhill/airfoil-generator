@@ -11,7 +11,7 @@ const SC2110_DAT = "SIKORSKY SC2110 AIRFOIL 41. 47. 0.0 0.0000000 0.0041792 0.01
 function stn(position is number, designation is string, chord is ValueWithUnits) returns map
 {
     return { "position" : position, "source" : AirfoilSource.NACA, "label" : "NACA " ~ designation, "coordinates" : "",
-            "designation" : designation, "custom" : false, "family" : AirfoilFamily.NACA4, "reflex" : false,
+            "scaleThickness" : false, "coordThickness" : 12, "designation" : designation, "custom" : false, "family" : AirfoilFamily.NACA4, "reflex" : false,
             "camber" : 2, "camberPos" : 40, "designCl" : 0.3, "posIndex" : 3, "thickness" : 12, "chord" : chord,
             "origin" : 25, "aoa" : 0 * degree, "sweep" : 0 * millimeter, "vertical" : 0 * millimeter };
 }
@@ -262,7 +262,7 @@ export const wingTest = defineFeature(function(context is Context, id is Id, def
                     out = out ~ "ERR " ~ coords.error ~ " | ";
                     continue;
                 }
-                const surfaces = coordinateSurfaces(coords, 40, true);
+                const surfaces = coordinateSurfaces(coords, 40, true, 1);
                 out = out ~ coords.name ~ " " ~ size(coords.upper) ~ "/" ~ size(coords.lower) ~ (coords.closeRamp ? " ramp" : " pinch");
                 for (var i in [8, 20, 36])
                     out = out ~ " " ~ roundToPrecision(surfaces.upper[i][1], 5) ~ "/" ~ roundToPrecision(surfaces.lower[i][1], 5);
@@ -285,6 +285,40 @@ export const wingTest = defineFeature(function(context is Context, id is Id, def
             out = out ~ " | " ~ report(context, id + "d", "SC", [sc, stn(100, "0012", 120 * millimeter)], {});
             out = out ~ " " ~ report(context, id + "e", "SCopen", [sc, stn(100, "0012", 120 * millimeter)], { "closedTE" : false });
             throw regenError(out ~ " | expect pinch pinch ramp, 18/18 .05623/-.03739 .07024/-.03165 .00303/-.00105, 17/17 .09066/-.02795 .11402/-.01152 .00431/-.00098");
+        }
+        if (SUITE == "tscale")
+        {
+            // Thickness scaling of pasted coordinates: file thickness (%) and scaled section y at cosine indices 20, 36
+            // of 40 (closed TE) against tools/dat_reference.py --scale (naca2412 -> 15, goe387 -> 10, sc2110 -> 14,
+            // the last with the thickness-ramp closing); the editing logic filling in the file's thickness and the
+            // label; then volumes: naca2412.dat scaled to 15 % vs the calculated NACA 2415 wing (expect 98.8 %, as unscaled).
+            var out = "";
+            const cases = [[NACA2412_DAT, 15], [GOE387_DAT, 10], [SC2110_DAT, 14]];
+            for (var c in cases)
+            {
+                const coords = parseCoordinates(c[0]);
+                const surfaces = coordinateSurfaces(coords, 40, true, c[1] / 100 / coords.thickness);
+                out = out ~ "t" ~ roundToPrecision(coords.thickness * 100, 3);
+                for (var i in [20, 36])
+                    out = out ~ " " ~ roundToPrecision(surfaces.upper[i][1], 5) ~ "/" ~ roundToPrecision(surfaces.lower[i][1], 5);
+                out = out ~ " | ";
+            }
+            var datRoot = stn(0, "2412", 200 * millimeter);
+            datRoot.source = AirfoilSource.COORDINATES;
+            datRoot.coordinates = NACA2412_DAT;
+            var ticked = datRoot;
+            ticked.scaleThickness = true;
+            const edited = airfoilWingEditLogic(context, id, { "stations" : [datRoot] }, { "stations" : [ticked] }, false);
+            out = out ~ edited.stations[0].coordThickness ~ " '" ~ edited.stations[0].label ~ "' | ";
+            ticked.coordThickness = 15;
+            var datTip = ticked;
+            datTip.position = 100;
+            datTip.chord = 120 * millimeter;
+            out = out ~ report(context, id + "a", "DAT15", [ticked, datTip], {});
+            out = out ~ " " ~ report(context, id + "b", "N2415", [stn(0, "2415", 200 * millimeter), stn(100, "2415", 120 * millimeter)], {});
+            // Unscaled root, scaled tip: 12 -> 15 %.
+            out = out ~ " " ~ report(context, id + "c", "MIX", [datRoot, datTip], {});
+            throw regenError(out);
         }
         if (SUITE == "reflex")
         {
